@@ -404,7 +404,7 @@ static UIColor *THColorFromHexString(NSString *hexString) {
     LinkItem *discord = [LinkItem new];
     discord.title = @"Join the Discord Server";
     discord.linkDetail = @"Join the community for support and discussions.";
-    discord.urlString = @"https://discord.gg/T5uvkxhFB9";
+    discord.urlString = @"https://discord.gg/8b36UrNPEw";
 
     self.linkItems = @[twitter, discord];
 
