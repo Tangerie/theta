@@ -1,0 +1,10 @@
+.theos/
+packages/
+output/
+TweakCOMPILE.xm
+*.deb
+*.ipa
+.DS_Store
+default.profraw
+tools/insert_dylib
+input/Payload/
