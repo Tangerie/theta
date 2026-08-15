@@ -32,12 +32,15 @@ static NSString *theta_recipientUsernameFromNavBarRootView(UIView *rootView) {
 
 	// 1. Self -> IGNavigationBar: in rootView.subviews find IGNavigationBar
 	Class igNavBarClass = NSClassFromString(@"IGNavigationBar");
-	if (!igNavBarClass) return theta_recipientUsernameFromThreadVCFallback(rootView);
 	UIView *igNavBar = nil;
-	for (UIView *sub in rootView.subviews) {
-		if ([sub isKindOfClass:igNavBarClass]) {
-			igNavBar = sub;
-			break;
+	if ([rootView isKindOfClass:[UINavigationBar class]]) {
+		igNavBar = rootView;
+	} else if (igNavBarClass) {
+		for (UIView *sub in rootView.subviews) {
+			if ([sub isKindOfClass:igNavBarClass]) {
+				igNavBar = sub;
+				break;
+			}
 		}
 	}
 	if (!igNavBar) return theta_recipientUsernameFromThreadVCFallback(rootView);
@@ -268,6 +271,75 @@ static Class s_threadVCClass(void) {
 	return c;
 }
 
+static Class s_messageListVCClass(void) {
+	static Class c = nil;
+	static dispatch_once_t once;
+	dispatch_once(&once, ^{
+		c = ThetaFirstClass(@[
+			@"IGDirectMessageListViewController",
+			@"IGDirectMessageListViewController.IGDirectMessageListViewController",
+			@"_TtC33IGDirectMessageListViewController33IGDirectMessageListViewController",
+		]);
+	});
+	return c;
+}
+
+static Class s_composerClass(void) {
+	static Class c = nil;
+	static dispatch_once_t once;
+	dispatch_once(&once, ^{
+		c = ThetaFirstClass(@[
+			@"IGDirectComposer",
+			@"_TtC16IGDirectComposer16IGDirectComposer",
+		]);
+	});
+	return c;
+}
+
+static Class s_reactionControllerClass(void) {
+	static Class c = nil;
+	static dispatch_once_t once;
+	dispatch_once(&once, ^{
+		c = ThetaFirstClass(@[
+			@"_TtC33IGDirectMessageReactionController33IGDirectMessageReactionController",
+			@"IGDirectMessageReactionController.IGDirectMessageReactionController",
+			@"IGDirectMessageReactionController",
+		]);
+	});
+	return c;
+}
+
+static id theta_messageListVCFromThreadVC(id threadVC) {
+	Class listCls = s_messageListVCClass();
+	if (!threadVC) return nil;
+	if (listCls && [threadVC isKindOfClass:listCls]) return threadVC;
+	id listVC = ThetaValueForKey(threadVC, @"messageListViewController");
+	if (!listVC) listVC = ThetaValueForKey(threadVC, @"_messageListViewController");
+	if (listVC) return listVC;
+	if (![threadVC isKindOfClass:[UIViewController class]]) return nil;
+	for (UIViewController *child in [(UIViewController *)threadVC childViewControllers]) {
+		if (listCls && [child isKindOfClass:listCls]) return child;
+		id nested = theta_messageListVCFromThreadVC(child);
+		if (nested) return nested;
+	}
+	return nil;
+}
+
+static id theta_lastSeenTrackerFromObject(id obj) {
+	if (!obj) return nil;
+	id tracker = ThetaValueForKey(obj, @"lastSeenMessageTracker");
+	if (!tracker) tracker = ThetaValueForKey(obj, @"_lastSeenMessageTracker");
+	if (tracker) return tracker;
+	id dataSource = ThetaValueForKey(obj, @"_messageListDataSource");
+	if (!dataSource) dataSource = ThetaValueForKey(obj, @"messageListDataSource");
+	id delegate = dataSource ? ThetaValueForKey(dataSource, @"delegate") : nil;
+	if (delegate) {
+		tracker = ThetaValueForKey(delegate, @"_lastSeenMessageTracker");
+		if (!tracker) tracker = ThetaValueForKey(delegate, @"lastSeenMessageTracker");
+	}
+	return tracker;
+}
+
 // Debug logging macro for Mark As Seen; currently disabled to avoid log spam in normal use.
 #define THETA_MARKASSEEN_LOG(fmt, ...) do {} while (0)
 
@@ -351,6 +423,10 @@ static id theta_threadVCFromWindow(void) {
 	} @catch (__unused NSException *e) {}
 	THETA_MARKASSEEN_LOG(@"threadVCFromWindow: not found");
 	return nil;
+}
+
+id theta_activeDirectThreadViewController(void) {
+	return theta_threadVCFromWindow();
 }
 
 // Sideload when class name is stripped: find first VC in window hierarchy that has participant usernames (no class check).
@@ -466,6 +542,10 @@ static NSArray *theta_getParticipantsFromThreadObject(id thread) {
 		if (![participants isKindOfClass:[NSArray class]] || participants.count == 0) participants = [thread valueForKey:@"recipients"];
 		if (![participants isKindOfClass:[NSArray class]] || participants.count == 0) participants = [thread valueForKey:@"threadUsers"];
 		if (![participants isKindOfClass:[NSArray class]] || participants.count == 0) participants = [thread valueForKey:@"allParticipants"];
+		if (![participants isKindOfClass:[NSArray class]] || participants.count == 0) {
+			id other = [thread valueForKey:@"otherParticipant"];
+			if (other) participants = @[ other ];
+		}
 	} @catch (__unused NSException *e) {}
 	if ([participants isKindOfClass:[NSArray class]] && participants.count > 0) return participants;
 
@@ -483,39 +563,74 @@ static NSArray *theta_getParticipantsFromThreadObject(id thread) {
 	return nil;
 }
 
+// Current IG stores thread users/title on the session metadata, not on the thread VC.
+static id theta_threadSessionFromThreadVC(id threadVC) {
+	if (!threadVC) return nil;
+	id session = ThetaValueForKey(threadVC, @"threadSession");
+	if (!session) session = ThetaValueForKey(threadVC, @"_threadSession");
+	return session;
+}
+
+static id theta_threadMetadataFromThreadVC(id threadVC) {
+	id session = theta_threadSessionFromThreadVC(threadVC);
+	if (!session) return nil;
+	id provider = ThetaValueForKey(session, @"threadInfoProvider");
+	if (!provider) provider = ThetaValueForKey(session, @"_threadInfoProvider");
+	id meta = ThetaValueForKey(provider, @"threadMetadata");
+	if (!meta) meta = ThetaValueForKey(provider, @"_threadMetadata");
+	if (!meta) {
+		id state = ThetaValueForKey(session, @"state");
+		if (!state) state = ThetaValueForKey(session, @"_state");
+		meta = ThetaValueForKey(state, @"initialThreadMetadata");
+		if (!meta) meta = ThetaValueForKey(state, @"_initialThreadMetadata");
+	}
+	return meta;
+}
+
+static id theta_messageListDataSourceFromThreadVC(id threadVC) {
+	id ds = ThetaValueForKey(threadVC, @"_messageListDataSource");
+	if (!ds) ds = ThetaValueForKey(threadVC, @"messageListDataSource");
+	if (ds) return ds;
+	id session = theta_threadSessionFromThreadVC(threadVC);
+	ds = ThetaValueForKey(session, @"messageListDataSource");
+	if (!ds) ds = ThetaValueForKey(session, @"_messageListDataSource");
+	if (ds) return ds;
+	id listVC = theta_messageListVCFromThreadVC(threadVC);
+	ds = ThetaValueForKey(listVC, @"messageListDataSource");
+	if (!ds) ds = ThetaValueForKey(listVC, @"_messageListDataSource");
+	return ds;
+}
+
+static NSString *theta_sanitizeAutoMarkHandle(NSString *text) {
+	if (![text isKindOfClass:[NSString class]]) return nil;
+	NSString *trimmed = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+	if (trimmed.length == 0) return nil;
+	if ([trimmed hasPrefix:@"@"] && trimmed.length > 1) trimmed = [trimmed substringFromIndex:1];
+	NSString *lower = [trimmed lowercaseString];
+	if (lower.length < 2) return nil;
+	if ([lower hasPrefix:@"active "]) return nil;
+	if ([lower isEqualToString:@"business chat"] || [lower isEqualToString:@"instagram user"]) return nil;
+	return lower;
+}
+
 // Returns an array of other participants' usernames (lowercase) for the given thread VC. Excludes current user.
 static NSArray<NSString *> *theta_otherParticipantUsernames(id threadVC) {
+	id metadata = theta_threadMetadataFromThreadVC(threadVC);
+	id session = theta_threadSessionFromThreadVC(threadVC);
+	id dataSource = theta_messageListDataSourceFromThreadVC(threadVC);
 	id thread = nil;
-	id dataSource = nil;
 	@try {
 		thread = theta_getThreadFromObject(threadVC);
-		if (!thread) {
-			dataSource = [threadVC valueForKey:@"_messageListDataSource"];
-			if (!dataSource) dataSource = [threadVC valueForKey:@"messageListDataSource"];
-			if (!dataSource) dataSource = [threadVC valueForKey:@"_messageListAdapterDataSource"];
-			if (!dataSource) dataSource = [threadVC valueForKey:@"messageListAdapterDataSource"];
-			THETA_MARKASSEEN_LOG(@"dataSource %@", dataSource ? NSStringFromClass([dataSource class]) : @"nil");
-			if (dataSource) {
-				thread = theta_getThreadFromObject(dataSource);
-			}
-			if (!thread && dataSource) {
-				id delegate = [dataSource valueForKey:@"delegate"];
-				if (delegate) {
-					id vc = [delegate valueForKey:@"delegate"];
-					if (vc) thread = theta_getThreadFromObject(vc);
-				}
-			}
+		if (!thread) thread = metadata;
+		if (!thread && session) thread = theta_getThreadFromObject(session);
+		if (!thread && dataSource) thread = theta_getThreadFromObject(dataSource);
+		if (!thread && dataSource) {
+			id delegate = ThetaValueForKey(dataSource, @"delegate");
+			if (delegate) thread = theta_getThreadFromObject(ThetaValueForKey(delegate, @"delegate"));
 		}
 	} @catch (__unused NSException *e) {}
 	if (!thread) {
-		THETA_MARKASSEEN_LOG(@"otherParticipantUsernames: no thread on VC (tried VC, dataSource, delegate.delegate)");
-		// Fallback even without thread: derive lastSender from data source.
-		if (!dataSource) {
-			@try {
-				dataSource = [threadVC valueForKey:@"_messageListDataSource"];
-				if (!dataSource) dataSource = [threadVC valueForKey:@"messageListDataSource"];
-			} @catch (__unused NSException *e) { dataSource = nil; }
-		}
+		THETA_MARKASSEEN_LOG(@"otherParticipantUsernames: no thread on VC (tried session metadata, dataSource)");
 		id lastSender = nil;
 		@try {
 			if (dataSource && [dataSource respondsToSelector:@selector(mostRecentMessageSenderProfileImage)]) {
@@ -534,6 +649,8 @@ static NSArray<NSString *> *theta_otherParticipantUsernames(id threadVC) {
 			}
 		} @catch (__unused NSException *e) { lastSender = nil; }
 		if (!lastSender) {
+			NSString *title = theta_sanitizeAutoMarkHandle(ThetaValueForKey(metadata, @"threadTitle"));
+			if (title.length) return @[ title ];
 			THETA_MARKASSEEN_LOG(@"otherParticipantUsernames: fallback lastSender not found (no thread case)");
 			return @[];
 		}
@@ -586,12 +703,14 @@ static NSArray<NSString *> *theta_otherParticipantUsernames(id threadVC) {
 	}
 	NSString *currentUsername = nil;
 	@try {
-		id session = [threadVC valueForKey:@"userSession"];
-		if (!session) session = [threadVC valueForKey:@"_userSession"];
-		if (session) {
-			id cur = [session valueForKey:@"currentUser"];
-			if (!cur) cur = [session valueForKey:@"currentIgUser"];
-			if (!cur) cur = [session valueForKey:@"user"];
+		id userSession = ThetaValueForKey(threadVC, @"userSession");
+		if (!userSession) userSession = ThetaValueForKey(threadVC, @"_userSession");
+		if (!userSession) userSession = ThetaValueForKey(session, @"userSession");
+		if (!userSession) userSession = ThetaValueForKey(session, @"_userSession");
+		if (userSession) {
+			id cur = ThetaValueForKey(userSession, @"currentUser");
+			if (!cur) cur = ThetaValueForKey(userSession, @"currentIgUser");
+			if (!cur) cur = ThetaValueForKey(userSession, @"user");
 			currentUsername = theta_usernameFromUserLikeObject(cur);
 		}
 	} @catch (__unused NSException *e) {}
@@ -638,22 +757,16 @@ static NSArray<NSString *> *theta_otherParticipantUsernames(id threadVC) {
 		}
 		// If still empty, fall back to IGDirectThreadViewController.title, which is the recipient username for many business accounts.
 		if (usernames.count == 0) {
-			@try {
-				id titleObj = [threadVC valueForKey:@"title"];
-				if ([titleObj isKindOfClass:[NSString class]]) {
-					NSString *title = [(NSString *)titleObj stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-					if (title.length > 0) {
-						if ([title hasPrefix:@"@"] && title.length > 1) {
-							title = [title substringFromIndex:1];
-						}
-						NSString *lower = [[title lowercaseString] copy];
-						if (lower.length > 0) {
-							THETA_MARKASSEEN_LOG(@"otherParticipantUsernames: using threadVC.title fallback %@", lower);
-							[usernames addObject:lower];
-						}
-					}
-				}
-			} @catch (__unused NSException *e) {}
+			NSString *title = theta_sanitizeAutoMarkHandle(ThetaValueForKey(metadata, @"threadTitle"));
+			if (!title.length) {
+				@try {
+					title = theta_sanitizeAutoMarkHandle(ThetaValueForKey(threadVC, @"title"));
+				} @catch (__unused NSException *e) { title = nil; }
+			}
+			if (title.length) {
+				THETA_MARKASSEEN_LOG(@"otherParticipantUsernames: using thread title fallback %@", title);
+				[usernames addObject:title];
+			}
 		}
 	}
 	return usernames;
@@ -662,20 +775,24 @@ static NSArray<NSString *> *theta_otherParticipantUsernames(id threadVC) {
 /// Returns YES if we should call markLastMessageAsSeen: there is at least one unread message from the recipient (last message is from them and tracker reports unseen). Returns NO if last message is from self or already seen. Visible for Seen On Typing (BypassCharacterLimit.m).
 BOOL theta_hasUnreadFromRecipient(id threadVC) {
 	if (!threadVC) return NO;
-	id dataSource = nil;
-	@try {
-		dataSource = [threadVC valueForKey:@"_messageListDataSource"];
-		if (!dataSource) dataSource = [threadVC valueForKey:@"messageListDataSource"];
-	} @catch (__unused NSException *e) { dataSource = nil; }
-	if (!dataSource) return NO;
+	id listVC = theta_messageListVCFromThreadVC(threadVC);
+	id dataSource = theta_messageListDataSourceFromThreadVC(threadVC);
 
-	id tracker = nil;
-	@try {
-		id delegate = [dataSource valueForKey:@"delegate"];
-		if (delegate) tracker = [delegate valueForKey:@"_lastSeenMessageTracker"];
-	} @catch (__unused NSException *e) { tracker = nil; }
-	if (!tracker || ![tracker respondsToSelector:@selector(hasUnseenMessages)]) return NO;
-	if (![tracker performSelector:@selector(hasUnseenMessages)]) return NO;
+	id tracker = theta_lastSeenTrackerFromObject(listVC);
+	if (!tracker) tracker = theta_lastSeenTrackerFromObject(threadVC);
+	if (!tracker && dataSource) {
+		@try {
+			id delegate = [dataSource valueForKey:@"delegate"];
+			if (delegate) tracker = [delegate valueForKey:@"_lastSeenMessageTracker"];
+			if (!tracker && delegate) tracker = [delegate valueForKey:@"lastSeenMessageTracker"];
+		} @catch (__unused NSException *e) { tracker = nil; }
+	}
+	if (tracker && [tracker respondsToSelector:@selector(hasUnseenMessages)]) {
+		if (![tracker performSelector:@selector(hasUnseenMessages)]) return NO;
+	} else if (!dataSource) {
+		// Ivar names moved — still try to mark rather than no-op.
+		return YES;
+	}
 
 	id lastSender = nil;
 	@try {
@@ -691,7 +808,7 @@ BOOL theta_hasUnreadFromRecipient(id threadVC) {
 			}
 		}
 	} @catch (__unused NSException *e) { lastSender = nil; }
-	if (!lastSender) return NO;
+	if (!lastSender) return tracker != nil;
 
 	NSString *lastSenderId = theta_usernameFromUserLikeObject(lastSender);
 	if (!lastSenderId.length) return NO;
@@ -712,7 +829,7 @@ BOOL theta_hasUnreadFromRecipient(id threadVC) {
 }
 
 /// Shows "Marked as seen!" toast after a short delay so the key window is stable (reaction sheet/composer dismissed). Use for auto-mark, Seen On Send, Seen On Typing, Seen On React. Manual button uses immediate toast.
-static void theta_showMarkedAsSeenToastDeferred(void) {
+void theta_showMarkedAsSeenToastDeferred(void) {
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
 		if (ENABLED(@"Show Banners")) {
 			[ThetaHelper showToastWithTitle:@"Marked as seen!" subtitle:@"They know we are here." icon:[ThetaHelper imageFromEmojiString:@"👀" width:60] autoHide:4 openURL:nil];
@@ -720,142 +837,234 @@ static void theta_showMarkedAsSeenToastDeferred(void) {
 	});
 }
 
-/// Performs markLastMessageAsSeen using thread VC, then list VC, then delegate/tracker so marking actually takes effect (same pattern as manual button / Seen on Typing).
-static void theta_performMarkLastMessageAsSeen(id threadViewController, id listViewController) {
-	if ([threadViewController respondsToSelector:@selector(markLastMessageAsSeen)]) {
-		[threadViewController performSelector:@selector(markLastMessageAsSeen)];
-		return;
+/// Performs markLastMessageAsSeen using the Swift message-list VC, then tracker.
+/// Never call markLastMessageAsSeen on an arbitrary delegate — some composer wrappers
+/// respond to the selector as a no-op, which is what broke Seen On Typing.
+void theta_performMarkLastMessageAsSeen(id threadViewController, id listViewController) {
+	Class listCls = s_messageListVCClass();
+	Class threadCls = s_threadVCClass();
+
+	id threadVC = threadViewController;
+	BOOL isThread = threadCls && threadVC && [threadVC isKindOfClass:threadCls];
+	BOOL isList = listCls && threadVC && [threadVC isKindOfClass:listCls];
+	if (threadVC && !isThread && !isList) {
+		id fromWindow = theta_threadVCFromWindow();
+		if (fromWindow) threadVC = fromWindow;
 	}
-	if (listViewController && [listViewController respondsToSelector:@selector(markLastMessageAsSeen)]) {
-		[listViewController performSelector:@selector(markLastMessageAsSeen)];
-		return;
+
+	id listVC = listViewController;
+	if (listCls && listVC && ![listVC isKindOfClass:listCls]) listVC = nil;
+	if (!listVC) listVC = theta_messageListVCFromThreadVC(threadVC);
+	if (!listVC) listVC = theta_messageListVCFromThreadVC(theta_threadVCFromWindow());
+
+	if (listVC && [listVC respondsToSelector:@selector(markLastMessageAsSeen)]) {
+		BOOL isRealList = listCls && [listVC isKindOfClass:listCls];
+		if (isRealList || theta_lastSeenTrackerFromObject(listVC)) {
+			[listVC performSelector:@selector(markLastMessageAsSeen)];
+			return;
+		}
 	}
-	id dataSource = [threadViewController valueForKey:@"_messageListDataSource"];
-	if (!dataSource) dataSource = [threadViewController valueForKey:@"messageListDataSource"];
-	id delegate = dataSource ? [dataSource valueForKey:@"delegate"] : nil;
-	if (delegate && [delegate respondsToSelector:@selector(markLastMessageAsSeen)]) {
-		[delegate performSelector:@selector(markLastMessageAsSeen)];
-		return;
-	}
-	id tracker = delegate ? [delegate valueForKey:@"_lastSeenMessageTracker"] : nil;
+
+	id tracker = theta_lastSeenTrackerFromObject(listVC);
+	if (!tracker) tracker = theta_lastSeenTrackerFromObject(threadVC);
+	if (!tracker) tracker = theta_lastSeenTrackerFromObject(theta_threadVCFromWindow());
 	if (tracker && [tracker respondsToSelector:@selector(markLastMessageAsSeen)]) {
 		[tracker performSelector:@selector(markLastMessageAsSeen)];
-	}
-	if (ENABLED(@"Show Banners")) {
-		[ThetaHelper showToastWithTitle:@"Marked as seen!" subtitle:@"They know we are here." icon:[ThetaHelper imageFromEmojiString:@"👀" width:60] autoHide:4 openURL:nil];
 	}
 }
 
 static void seenButtonHandler(id self);
 
-static void theta_updateListToggleButtonImage(UIButton *listButton, BOOL inList) {
+static const NSInteger kThetaMarkSeenEyeTag = 0x54485345; // 'THSE'
+static const NSInteger kThetaMarkSeenListTag = 0x54484C53; // 'THLS'
+
+static void theta_updateListToggleButtonImage(UIBarButtonItem *listItem, BOOL inList) {
+	if (!listItem) return;
 	UIImage *img = [UIImage systemImageNamed:inList ? @"checkmark.circle.fill" : @"plus.circle"];
-	[listButton setImage:img forState:UIControlStateNormal];
+	listItem.image = img;
 }
 
-static UIView *theta_makeSeenButtonView(id navBarSelf) {
-	CGFloat w = 44.0 * 2.0 + 8.0;
-	UIView *container = [[UIView alloc] initWithFrame:CGRectMake(0, 0, w, 44)];
-	container.backgroundColor = [UIColor clearColor];
+static void theta_collectNavBarCandidateTexts(UIView *view, NSMutableArray<NSString *> *out) {
+	if (!view) return;
+	if ([view isKindOfClass:[UILabel class]]) {
+		NSString *t = theta_sanitizeAutoMarkHandle([(UILabel *)view text]);
+		if (t.length) [out addObject:t];
+	} else if ([view isKindOfClass:[UIButton class]]) {
+		NSString *t = theta_sanitizeAutoMarkHandle([(UIButton *)view currentTitle]);
+		if (t.length) [out addObject:t];
+	}
+	for (UIView *sub in view.subviews) {
+		theta_collectNavBarCandidateTexts(sub, out);
+	}
+}
 
-	// Use nav-bar-based check so button state matches add/remove (same username source as tap handler).
-	NSString *usernameAtCreate = theta_recipientUsernameFromNavBarRootView((UIView *)navBarSelf);
-	BOOL inList = usernameAtCreate.length && theta_isNavBarRecipientInAutoMarkList((UIView *)navBarSelf);
+static NSString *theta_usernameFromVisibleNavBarText(id threadVC) {
+	UIView *bar = nil;
+	id nav = ThetaValueForKey(threadVC, @"navigationController");
+	if (nav) bar = ThetaValueForKey(nav, @"navigationBar");
+	if (!bar) {
+		UIViewController *vc = [threadVC isKindOfClass:[UIViewController class]] ? (UIViewController *)threadVC : nil;
+		bar = vc.navigationItem.titleView;
+	}
+	if (![bar isKindOfClass:[UIView class]]) return nil;
+	NSMutableArray<NSString *> *texts = [NSMutableArray array];
+	theta_collectNavBarCandidateTexts(bar, texts);
+	for (NSString *t in texts) {
+		if ([t rangeOfString:@" "].location == NSNotFound) return t;
+	}
+	return texts.firstObject;
+}
 
-	UIButton *listButton = [UIButton buttonWithType:UIButtonTypeSystem];
-	listButton.frame = CGRectMake(0, 0, 44, 44);
-	theta_updateListToggleButtonImage(listButton, inList);
-	listButton.accessibilityLabel = inList ? @"Remove from auto-mark list" : @"Add to auto-mark list";
-	[container addSubview:listButton];
+static NSString *theta_autoMarkUsername(void) {
+	id threadVC = theta_threadVCFromWindow();
+	if (threadVC) {
+		NSArray<NSString *> *names = theta_otherParticipantUsernames(threadVC);
+		if (names.count > 0) return [names.firstObject copy];
+		NSString *title = theta_sanitizeAutoMarkHandle(ThetaValueForKey(theta_threadMetadataFromThreadVC(threadVC), @"threadTitle"));
+		if (title.length) return title;
+		NSString *fromLabels = theta_usernameFromVisibleNavBarText(threadVC);
+		if (fromLabels.length) return fromLabels;
+		UIView *root = nil;
+		id nav = ThetaValueForKey(threadVC, @"navigationController");
+		if (nav) root = ThetaValueForKey(nav, @"view");
+		if (!root && nav) root = ThetaValueForKey(nav, @"navigationBar");
+		if (!root) root = ThetaValueForKey(threadVC, @"view");
+		if (root) {
+			NSString *fromNav = theta_recipientUsernameFromNavBarRootView(root);
+			if (fromNav.length) return fromNav;
+		}
+	}
+	return nil;
+}
 
-	// Re-evaluate list state shortly after creation, once data source/thread are fully wired up.
-	__weak typeof(navBarSelf) weakNavForDelayed = navBarSelf;
-	__weak UIButton *weakListButton = listButton;
+static BOOL theta_autoMarkUsernameIsInList(NSString *username) {
+	if (!username.length) return NO;
+	NSArray *list = [[NSUserDefaults standardUserDefaults] objectForKey:@"Theta_MarkAsSeen_AutoMarkUserIds"];
+	if (![list isKindOfClass:[NSArray class]]) return NO;
+	NSString *needle = [username lowercaseString];
+	for (id obj in list) {
+		if ([obj isKindOfClass:[NSString class]] && [[(NSString *)obj lowercaseString] isEqualToString:needle])
+			return YES;
+	}
+	return NO;
+}
+
+static void theta_listToggleTapped(UIBarButtonItem *listItem) {
+	NSString *resolvedUsername = theta_autoMarkUsername();
+	if (!resolvedUsername.length) {
+		[ThetaHelper showToastWithTitle:@"Couldn't find username" subtitle:@"Open the thread and try again." icon:[UIImage systemImageNamed:@"exclamationmark.triangle"] autoHide:3 openURL:nil];
+		return;
+	}
+	NSString *normalized = [resolvedUsername lowercaseString];
+	NSMutableArray *list = [NSMutableArray array];
+	NSArray *stored = [[NSUserDefaults standardUserDefaults] objectForKey:@"Theta_MarkAsSeen_AutoMarkUserIds"];
+	if ([stored isKindOfClass:[NSArray class]]) [list addObjectsFromArray:stored];
+	BOOL anyInList = theta_autoMarkUsernameIsInList(normalized);
+	if (anyInList) {
+		NSMutableArray *kept = [NSMutableArray array];
+		for (id obj in list) {
+			if (![obj isKindOfClass:[NSString class]]) continue;
+			if ([[(NSString *)obj lowercaseString] isEqualToString:normalized]) continue;
+			[kept addObject:obj];
+		}
+		[list setArray:kept];
+		theta_updateListToggleButtonImage(listItem, NO);
+		listItem.accessibilityLabel = @"Add to auto-mark list";
+		UIImage *icon = thetaColoredSystemSymbol(@"minus.circle", [UIColor systemRedColor]);
+		[ThetaHelper showToastWithTitle:[NSString stringWithFormat:@"Removed @%@ from list", normalized] subtitle:@"No longer know we're here." icon:icon autoHide:3 openURL:nil];
+	} else {
+		[list addObject:normalized];
+		theta_updateListToggleButtonImage(listItem, YES);
+		listItem.accessibilityLabel = @"Remove from auto-mark list";
+		UIImage *icon = thetaColoredSystemSymbol(@"checkmark.circle.fill", [UIColor systemGreenColor]);
+		[ThetaHelper showToastWithTitle:[NSString stringWithFormat:@"Added @%@ to list", normalized] subtitle:@"They will know we're here." icon:icon autoHide:3 openURL:nil];
+	}
+	[[NSUserDefaults standardUserDefaults] setObject:list forKey:@"Theta_MarkAsSeen_AutoMarkUserIds"];
+	[[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+/// Eye (rightmost) then plus, so callers can insert-at-0 or append without reversing visual order.
+static NSArray<UIBarButtonItem *> *theta_makeSeenBarButtonItems(id contextView) {
+	NSString *usernameAtCreate = theta_autoMarkUsername();
+	if (!usernameAtCreate.length && [contextView isKindOfClass:[UIView class]]) {
+		usernameAtCreate = theta_recipientUsernameFromNavBarRootView((UIView *)contextView);
+	}
+	BOOL inList = theta_autoMarkUsernameIsInList(usernameAtCreate);
+
+	UIImage *listImg = [UIImage systemImageNamed:inList ? @"checkmark.circle.fill" : @"plus.circle"];
+	__block UIBarButtonItem *listItem = nil;
+	listItem = [[UIBarButtonItem alloc] initWithPrimaryAction:[UIAction actionWithTitle:@"" image:listImg identifier:nil handler:^(__unused UIAction *action) {
+		theta_listToggleTapped(listItem);
+	}]];
+	listItem.tag = kThetaMarkSeenListTag;
+	listItem.accessibilityLabel = inList ? @"Remove from auto-mark list" : @"Add to auto-mark list";
+	__weak UIBarButtonItem *weakListItem = listItem;
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-		UIButton *strongBtn = weakListButton;
-		if (!strongBtn) return;
-		// Same nav-bar-based check so state matches add/remove when re-entering conversation.
-		BOOL inListLater = theta_isNavBarRecipientInAutoMarkList((UIView *)weakNavForDelayed);
-		theta_updateListToggleButtonImage(strongBtn, inListLater);
-		strongBtn.accessibilityLabel = inListLater ? @"Remove from auto-mark list" : @"Add to auto-mark list";
+		UIBarButtonItem *strongItem = weakListItem;
+		if (!strongItem) return;
+		BOOL inListLater = theta_autoMarkUsernameIsInList(theta_autoMarkUsername());
+		theta_updateListToggleButtonImage(strongItem, inListLater);
+		strongItem.accessibilityLabel = inListLater ? @"Remove from auto-mark list" : @"Add to auto-mark list";
 	});
 
-	UIButton *seenButton = [UIButton buttonWithType:UIButtonTypeSystem];
-	seenButton.frame = CGRectMake(44 + 8, 0, 44, 44);
-	[seenButton setImage:[UIImage systemImageNamed:@"eye"] forState:UIControlStateNormal];
-	seenButton.accessibilityLabel = @"Mark as seen";
-	__weak typeof(navBarSelf) weakSelf = navBarSelf;
-	[seenButton addAction:[UIAction actionWithHandler:^(UIAction *action) {
-		seenButtonHandler(weakSelf);
-	}] forControlEvents:UIControlEventTouchUpInside];
-	[container addSubview:seenButton];
-	ThetaSetCaptureHiding(container);
+	UIBarButtonItem *eyeItem = [[UIBarButtonItem alloc] initWithPrimaryAction:[UIAction actionWithTitle:@"" image:[UIImage systemImageNamed:@"eye"] identifier:nil handler:^(__unused UIAction *action) {
+		seenButtonHandler(contextView);
+	}]];
+	eyeItem.tag = kThetaMarkSeenEyeTag;
+	eyeItem.accessibilityLabel = @"Mark as seen";
 
-	__weak typeof(navBarSelf) weakNavBar = navBarSelf;
-	[listButton addAction:[UIAction actionWithHandler:^(UIAction *action) {
-		NSString *resolvedUsername = theta_recipientUsernameFromNavBarRootView((UIView *)weakNavBar);
-		NSArray<NSString *> *usernames = resolvedUsername.length ? @[ resolvedUsername ] : @[];
-		if (usernames.count == 0) {
-			THETA_MARKASSEEN_LOG(@"early return: no usernames");
-			return;
-		}
-		NSMutableArray *list = [NSMutableArray array];
-		NSArray *stored = [[NSUserDefaults standardUserDefaults] objectForKey:@"Theta_MarkAsSeen_AutoMarkUserIds"];
-		if ([stored isKindOfClass:[NSArray class]]) [list addObjectsFromArray:stored];
-		BOOL anyInList = NO;
-		for (NSString *u in usernames) {
-			if ([list containsObject:u]) { anyInList = YES; break; }
-		}
-		if (anyInList) {
-			[list removeObjectsInArray:usernames];
-			theta_updateListToggleButtonImage(listButton, NO);
-			listButton.accessibilityLabel = @"Add to auto-mark list";
-			THETA_MARKASSEEN_LOG(@"removed from list, saving %lu entries", (unsigned long)list.count);
-			if (ENABLED(@"Show Banners")) {
-				UIImage *icon = thetaColoredSystemSymbol(@"minus.circle", [UIColor systemRedColor]);
-				[ThetaHelper showToastWithTitle:[NSString stringWithFormat:@"Removed @%@ from list", usernames.firstObject] subtitle:@"No longer know we're here." icon:icon autoHide:3 openURL:nil];
-			}
-		} else {
-			for (NSString *u in usernames) {
-				if (![list containsObject:u]) [list addObject:u];
-			}
-			theta_updateListToggleButtonImage(listButton, YES);
-			listButton.accessibilityLabel = @"Remove from auto-mark list";
-			THETA_MARKASSEEN_LOG(@"added to list: %@, saving %lu entries", usernames, (unsigned long)list.count);
-			if (ENABLED(@"Show Banners")) {
-				NSString *msg = usernames.count == 1
-					? [NSString stringWithFormat:@"Added @%@ to list", usernames.firstObject]
-					: [NSString stringWithFormat:@"%lu user(s) added.", (unsigned long)usernames.count];
-				UIImage *icon = thetaColoredSystemSymbol(@"checkmark.circle.fill", [UIColor systemGreenColor]);
-				[ThetaHelper showToastWithTitle:msg subtitle:@"They will know we're here." icon:icon autoHide:3 openURL:nil];
-			}
-		}
-		[[NSUserDefaults standardUserDefaults] setObject:list forKey:@"Theta_MarkAsSeen_AutoMarkUserIds"];
-		[[NSUserDefaults standardUserDefaults] synchronize];
-		THETA_MARKASSEEN_LOG(@"saved to UserDefaults");
-	}] forControlEvents:UIControlEventTouchUpInside];
+	return @[ eyeItem, listItem ];
+}
 
-	return container;
+static BOOL theta_barItemIsThetaMarkButton(UIBarButtonItem *item) {
+	if (!item) return NO;
+	if (item.tag == kThetaMarkSeenEyeTag || item.tag == kThetaMarkSeenListTag) return YES;
+	UIView *v = nil;
+	@try { v = item.customView; } @catch (__unused NSException *e) { v = nil; }
+	if (!v) return NO;
+	if (v.tag == kThetaMarkSeenEyeTag || v.tag == kThetaMarkSeenListTag) return YES;
+	if (fabs(v.bounds.size.width - 96.0) < 1.0) return YES;
+	for (UIView *sub in v.subviews) {
+		if (sub.tag == kThetaMarkSeenEyeTag || sub.tag == kThetaMarkSeenListTag) return YES;
+	}
+	return NO;
+}
+
+static BOOL theta_itemsAlreadyHaveMarkButtons(NSArray *items) {
+	for (UIBarButtonItem *item in items) {
+		if (theta_barItemIsThetaMarkButton(item)) return YES;
+	}
+	return NO;
+}
+
+static void theta_insertSeenBarButtonItems(NSMutableArray *items, id contextView, BOOL insertAtStart) {
+	if (!items || theta_itemsAlreadyHaveMarkButtons(items)) return;
+	NSArray<UIBarButtonItem *> *pair = theta_makeSeenBarButtonItems(contextView);
+	if (pair.count < 2) return;
+	if (insertAtStart) {
+		[items insertObject:pair[0] atIndex:0];
+		[items insertObject:pair[1] atIndex:1];
+	} else {
+		[items addObject:pair[0]];
+		[items addObject:pair[1]];
+	}
 }
 
 static void seenButtonHandler(id self) {
     @try {
-		UIResponder *responder = self;
-		while ((responder = [responder nextResponder])) {
-			if ([responder isKindOfClass:[UIViewController class]]) {
-				break;
-			}
+		id threadVC = nil;
+		if ([self isKindOfClass:[UIView class]]) threadVC = theta_threadVCFromView((UIView *)self);
+		if (!threadVC) threadVC = theta_threadVCFromWindow();
+		if (!threadVC) {
+			[ThetaHelper showToastWithTitle:@"Mark failed" subtitle:@"Couldn't find this thread." icon:[UIImage systemImageNamed:@"exclamationmark.triangle"] autoHide:3 openURL:nil];
+			return;
 		}
-
-		if ([responder isKindOfClass:objc_getClass("IGDirectThreadViewController")]) {
-			id threadVC = responder;
-			// Manual button: always mark when tapped (no unread check); use full chain so it works across accounts.
-			if (!theta_hasUnreadFromRecipient(threadVC)) return;
-			theta_performMarkLastMessageAsSeen(threadVC, nil);
-			if (ENABLED(@"Show Banners")) {
-				[ThetaHelper showToastWithTitle:@"Marked as seen!" subtitle:@"They know we are here." icon:[ThetaHelper imageFromEmojiString:@"👀" width:60] autoHide:4 openURL:nil];
-			}
+		if (!theta_hasUnreadFromRecipient(threadVC)) {
+			[ThetaHelper showToastWithTitle:@"Already seen" subtitle:@"No unread messages from them." icon:[UIImage systemImageNamed:@"eye"] autoHide:3 openURL:nil];
+			return;
 		}
+		theta_performMarkLastMessageAsSeen(threadVC, nil);
+		[ThetaHelper showToastWithTitle:@"Marked as seen!" subtitle:@"They know we are here." icon:[ThetaHelper imageFromEmojiString:@"👀" width:60] autoHide:4 openURL:nil];
 	} @catch (NSException *exception) {
 		NSLog(@"Error: %@", exception);
 	}
@@ -895,14 +1104,13 @@ static BOOL isDirectThreadNavigationBar(id navBarView) {
 
 static void (*orig_rightBarButtonItems)(id self, SEL _cmd, id arg1);
 static void hook_rightBarButtonItems(id self, SEL _cmd, id arg1) {
-	NSMutableArray *new_items = [arg1 mutableCopy];
+	NSMutableArray *new_items = [arg1 mutableCopy] ?: [NSMutableArray array];
 	BOOL hideBlend = ENABLED(@"Hide Blend Button");
 	BOOL hideCalls = ENABLED(@"Hide Call Buttons");
 
 	if (ENABLED(@"Mark As Seen")) {
 		@try {
-			UIView *seenView = theta_makeSeenButtonView(self);
-			if (seenView) [new_items addObject:[[UIBarButtonItem alloc] initWithCustomView:seenView]];
+			theta_insertSeenBarButtonItems(new_items, self, NO);
 		} @catch (__unused NSException *e) {}
 	}
 
@@ -973,45 +1181,27 @@ static void hook_seenOnSend(id self, SEL _cmd, id arg1) {
 
 static void (*orig_seenOnSend2)(id self, SEL _cmd);
 static void hook_seenOnSend2(id self, SEL _cmd) {
-	orig_seenOnSend2(self, _cmd);
+	if (orig_seenOnSend2) orig_seenOnSend2(self, _cmd);
 
-	if (ENABLED(@"Seen On Send")) {
-		@try {
-			UIViewController *viewController = [ThetaHelper nearestViewController:self];
-			id threadViewController = [viewController valueForKey:@"delegate"];
-			if ([threadViewController isKindOfClass:NSClassFromString(@"IGDirectThreadViewController")]) {
-				if (!theta_hasUnreadFromRecipient(threadViewController)) return;
-				id msgListDataSource = [threadViewController valueForKey:@"_messageListDataSource"];
-				id delegate = [msgListDataSource valueForKey:@"delegate"];
-				id tracker = [delegate valueForKey:@"_lastSeenMessageTracker"];
-
-				if ([threadViewController respondsToSelector:@selector(markLastMessageAsSeen)]) {
-					[threadViewController performSelector:@selector(markLastMessageAsSeen)];
-				} else {
-					[tracker performSelector:@selector(markLastMessageAsSeen)];
-				}
-
-				theta_showMarkedAsSeenToastDeferred();
-			} else if ([threadViewController isKindOfClass:NSClassFromString(@"IGDirectThreadViewComposerViewControllerDelegateController")]) {
-				id threadVC = [[threadViewController valueForKey:@"_messageListDataSource"] valueForKey:@"delegate"];
-				if (threadVC) threadVC = [threadVC valueForKey:@"delegate"];
-				if (threadVC && theta_hasUnreadFromRecipient(threadVC)) {
-					id msgListDataSource = [threadViewController valueForKey:@"_messageListDataSource"];
-					id delegate = [msgListDataSource valueForKey:@"delegate"];
-					id tracker = [delegate valueForKey:@"_lastSeenMessageTracker"];
-
-					if ([delegate respondsToSelector:@selector(markLastMessageAsSeen)]) {
-						[delegate performSelector:@selector(markLastMessageAsSeen)];
-					} else {
-						[tracker performSelector:@selector(markLastMessageAsSeen)];
-					}
-
-					theta_showMarkedAsSeenToastDeferred();
-				}
-			}
-		} @catch (NSException *exception) {
-			NSLog(@"Error: %@", exception);
+	if (!ENABLED(@"Seen On Send")) return;
+	@try {
+		id threadViewController = nil;
+		UIViewController *viewController = [ThetaHelper nearestViewController:self];
+		id delegate = ThetaValueForKey(viewController, @"delegate");
+		Class threadCls = s_threadVCClass();
+		if (threadCls && [delegate isKindOfClass:threadCls]) {
+			threadViewController = delegate;
+		} else if (delegate) {
+			id nested = ThetaValueForKey(delegate, @"delegate");
+			if (threadCls && [nested isKindOfClass:threadCls]) threadViewController = nested;
 		}
+		if (!threadViewController) threadViewController = theta_threadVCFromWindow();
+		if (!threadViewController) return;
+		if (!theta_hasUnreadFromRecipient(threadViewController)) return;
+		theta_performMarkLastMessageAsSeen(threadViewController, nil);
+		theta_showMarkedAsSeenToastDeferred();
+	} @catch (NSException *exception) {
+		NSLog(@"Error: %@", exception);
 	}
 }
 
@@ -1095,7 +1285,6 @@ static void hook_messageReactionSelection4(id self, SEL _cmd, id arg1, id arg2, 
 
 	if (!ENABLED(@"Seen On React")) return;
 	@try {
-		// Double-tap: arg1 is the cell; prefer window so we get the visible thread VC.
 		id threadViewController = theta_threadVCFromWindow();
 		if (!threadViewController && arg1 && [arg1 isKindOfClass:[UIView class]]) threadViewController = theta_threadVCFromView((UIView *)arg1);
 		if (!threadViewController) threadViewController = [[self valueForKey:@"messageActionBlockHandler"] valueForKey:@"_threadViewFeatureDelegate"];
@@ -1103,6 +1292,22 @@ static void hook_messageReactionSelection4(id self, SEL _cmd, id arg1, id arg2, 
 		if (!theta_hasUnreadFromRecipient(threadViewController)) return;
 		id listViewController = [[self valueForKey:@"presentationDelegate"] valueForKey:@"delegate"];
 		theta_performMarkLastMessageAsSeen(threadViewController, listViewController);
+		theta_showMarkedAsSeenToastDeferred();
+	} @catch (NSException *exception) {
+		NSLog(@"Error: %@", exception);
+	}
+}
+
+static void (*orig_doubleTapTwoArg)(id self, SEL _cmd, id arg1, id arg2);
+static void hook_doubleTapTwoArg(id self, SEL _cmd, id arg1, id arg2) {
+	if (orig_doubleTapTwoArg) orig_doubleTapTwoArg(self, _cmd, arg1, arg2);
+	if (!ENABLED(@"Seen On React")) return;
+	@try {
+		id threadViewController = theta_threadVCFromWindow();
+		if (!threadViewController && arg1 && [arg1 isKindOfClass:[UIView class]]) threadViewController = theta_threadVCFromView((UIView *)arg1);
+		if (!threadViewController) return;
+		if (!theta_hasUnreadFromRecipient(threadViewController)) return;
+		theta_performMarkLastMessageAsSeen(threadViewController, nil);
 		theta_showMarkedAsSeenToastDeferred();
 	} @catch (NSException *exception) {
 		NSLog(@"Error: %@", exception);
@@ -1124,28 +1329,119 @@ static void hook_threadViewDidAppear(id self, SEL _cmd, BOOL animated) {
 	}
 }
 
+static BOOL theta_shouldSuppressAutoSeen(id context) {
+	BOOL markAsSeen = ENABLED(@"Mark As Seen");
+	BOOL seenOnTyping = ENABLED(@"Seen On Typing");
+	BOOL seenOnReact = ENABLED(@"Seen On React");
+	BOOL seenOnSend = ENABLED(@"Seen On Send");
+	BOOL anyFeature = markAsSeen || seenOnTyping || seenOnReact || seenOnSend;
+	if (!anyFeature && theta_autoMarkListIsEmpty()) return NO;
+	if (isThreadVCInAutoMarkList(context) || isThreadParticipantInAutoMarkList(context)) return NO;
+	return anyFeature;
+}
+
+static void (*orig_listVC_viewDidAppear)(id self, SEL _cmd, BOOL animated);
+static void hook_listVC_viewDidAppear(id self, SEL _cmd, BOOL animated) {
+	id threadVC = theta_threadVCFromWindow() ?: self;
+	BOOL suppress = theta_shouldSuppressAutoSeen(threadVC) || theta_shouldSuppressAutoSeen(self);
+	id prevBypass = nil;
+	if (suppress) {
+		prevBypass = ThetaValueForKey(self, @"bypassSeenStateUpdate");
+		ThetaSetValueForKey(self, @YES, @"bypassSeenStateUpdate");
+	}
+	if (orig_listVC_viewDidAppear) orig_listVC_viewDidAppear(self, _cmd, animated);
+	if (suppress) {
+		ThetaSetValueForKey(self, prevBypass ?: @NO, @"bypassSeenStateUpdate");
+	}
+	@try {
+		if (theta_autoMarkListIsEmpty()) return;
+		if (!isThreadVCInAutoMarkList(threadVC) && !isThreadVCInAutoMarkList(self)) return;
+		if (!theta_hasUnreadFromRecipient(threadVC) && !theta_hasUnreadFromRecipient(self)) return;
+		theta_performMarkLastMessageAsSeen(threadVC, self);
+		theta_showMarkedAsSeenToastDeferred();
+	} @catch (NSException *exception) {
+		NSLog(@"[Theta] MarkAsSeen listVC viewDidAppear: %@", exception);
+	}
+}
+
+static void (*orig_navItem_setRightBarButtonItems)(id self, SEL _cmd, id arg1);
+static void hook_navItem_setRightBarButtonItems(id self, SEL _cmd, id arg1) {
+	NSMutableArray *new_items = [arg1 mutableCopy] ?: [NSMutableArray array];
+	id threadVC = theta_threadVCFromWindow();
+	BOOL isThreadItem = NO;
+	@try {
+		isThreadItem = threadVC && [threadVC navigationItem] == self;
+	} @catch (__unused NSException *e) {
+		isThreadItem = NO;
+	}
+	if (isThreadItem && ENABLED(@"Mark As Seen")) {
+		@try {
+			UIView *host = nil;
+			@try {
+				id nav = ThetaValueForKey(threadVC, @"navigationController");
+				if (nav) host = ThetaValueForKey(nav, @"navigationBar");
+				if (!host) host = ThetaValueForKey(threadVC, @"view");
+			} @catch (__unused NSException *e) {}
+			theta_insertSeenBarButtonItems(new_items, host ?: self, YES);
+		} @catch (__unused NSException *e) {}
+	}
+	if (orig_navItem_setRightBarButtonItems) orig_navItem_setRightBarButtonItems(self, _cmd, new_items);
+}
+
+static void ThetaHookShouldUpdateLastSeen(void) {
+	SEL sel = @selector(shouldUpdateLastSeenMessage);
+	NSArray *names = @[
+		@"IGDirectThreadViewListAdapterDataSource",
+		@"IGDirectMessageListDataSourceAdapter",
+		@"IGDirectMessageListDataSource",
+	];
+	for (NSString *name in names) {
+		Class c = NSClassFromString(name);
+		if (c && class_getInstanceMethod(c, sel)) {
+			NullHookMessageIfPresent(c, sel, (void *)hook_markMessagesAsSeen, &orig_markMessagesAsSeen);
+			return;
+		}
+	}
+	int n = objc_getClassList(NULL, 0);
+	if (n <= 0) return;
+	Class *classes = (Class *)malloc((size_t)n * sizeof(Class));
+	n = objc_getClassList(classes, n);
+	for (int i = 0; i < n; i++) {
+		if (!class_getInstanceMethod(classes[i], sel)) continue;
+		const char *cname = class_getName(classes[i]);
+		if (!cname || !strstr(cname, "Direct")) continue;
+		Class supercls = class_getSuperclass(classes[i]);
+		Method mine = class_getInstanceMethod(classes[i], sel);
+		Method inherited = supercls ? class_getInstanceMethod(supercls, sel) : NULL;
+		if (inherited == mine) continue;
+		NullHookMessageIfPresent(classes[i], sel, (void *)hook_markMessagesAsSeen, &orig_markMessagesAsSeen);
+		break;
+	}
+	free(classes);
+}
+
 void THRegisterMarkAsSeenThreadAndReactionHooks(void) {
-    NullHookMessageEx(objc_getClass("IGDirectThreadViewListAdapterDataSource"), @selector(shouldUpdateLastSeenMessage), (void *)hook_markMessagesAsSeen, &orig_markMessagesAsSeen);
-    NullHookMessageEx(objc_getClass("IGDirectThreadViewController"), @selector(viewDidAppear:), (void *)hook_threadViewDidAppear, &orig_threadViewDidAppear);
-    NullHookMessageEx(objc_getClass("IGTallNavigationBarView"), @selector(setRightBarButtonItems:), (void *)hook_rightBarButtonItems, &orig_rightBarButtonItems);
-    if ([appVersion compare:@"411.0.0" options:NSNumericSearch] == NSOrderedAscending) {
-        NullHookMessageEx(objc_getClass("IGDirectMessageReactionController"), @selector(messageReactionSelectionViewController:didToggleEmoji:isSelected:isSuperReact:actionSource:), (void *)hook_messageReactionSelection, &orig_messageReactionSelection);
-        NullHookMessageEx(objc_getClass("IGDirectMessageReactionController"), @selector(performDoubleTapActionForCell:withViewModel:animated:), (void *)hook_messageReactionSelection2, &orig_messageReactionSelection2);
-    } else if ([appVersion compare:@"411.0.0" options:NSNumericSearch] != NSOrderedAscending && [appVersion compare:@"413.0.0" options:NSNumericSearch] == NSOrderedAscending) {
-        NullHookMessageEx(objc_getClass("IGDirectMessageReactionController.IGDirectMessageReactionController"), @selector(messageReactionSelectionViewController:didToggleEmoji:isSelected:isSuperReact:actionSource:), (void *)hook_messageReactionSelection3, &orig_messageReactionSelection3);
-        NullHookMessageEx(objc_getClass("IGDirectMessageReactionController.IGDirectMessageReactionController"), @selector(performDoubleTapActionForCell:withViewModel:animated:), (void *)hook_messageReactionSelection4, &orig_messageReactionSelection4);
-    } else {
-        NullHookMessageEx(objc_getClass("IGDirectMessageReactionController.IGDirectMessageReactionController"), @selector(messageReactionSelectionViewController:didToggleEmoji:isSelected:isSuperReact:actionSource:bottomSheetSessionId:), (void *)hook_messageReactionSelection5, &orig_messageReactionSelection5);
-        NullHookMessageEx(objc_getClass("IGDirectMessageReactionController.IGDirectMessageReactionController"), @selector(performDoubleTapActionForCell:withViewModel:animated:), (void *)hook_messageReactionSelection4, &orig_messageReactionSelection4);
-    }
+	ThetaHookShouldUpdateLastSeen();
+	NullHookMessageIfPresent(s_threadVCClass(), @selector(viewDidAppear:), (void *)hook_threadViewDidAppear, &orig_threadViewDidAppear);
+	NullHookMessageIfPresent(s_messageListVCClass(), @selector(viewDidAppear:), (void *)hook_listVC_viewDidAppear, &orig_listVC_viewDidAppear);
+	NullHookMessageIfPresent(objc_getClass("IGTallNavigationBarView"), @selector(setRightBarButtonItems:), (void *)hook_rightBarButtonItems, &orig_rightBarButtonItems);
+	NullHookMessageIfPresent([UINavigationItem class], @selector(setRightBarButtonItems:), (void *)hook_navItem_setRightBarButtonItems, &orig_navItem_setRightBarButtonItems);
+
+	Class reaction = s_reactionControllerClass();
+	NullHookMessageIfPresent(reaction, @selector(messageReactionSelectionViewController:didToggleEmoji:isSelected:isSuperReact:actionSource:bottomSheetSessionId:), (void *)hook_messageReactionSelection5, &orig_messageReactionSelection5);
+	NullHookMessageIfPresent(reaction, @selector(messageReactionSelectionViewController:didToggleEmoji:isSelected:isSuperReact:actionSource:), (void *)hook_messageReactionSelection, &orig_messageReactionSelection);
+	NullHookMessageIfPresent(reaction, @selector(performDoubleTapActionForCell:withViewModel:animated:), (void *)hook_messageReactionSelection2, &orig_messageReactionSelection2);
+	NullHookMessageIfPresent(objc_getClass("IGDirectMessageSectionComponents"), @selector(performDoubleTapActionForCell:withViewModel:), (void *)hook_doubleTapTwoArg, &orig_doubleTapTwoArg);
 }
 
 void THRegisterMarkAsSeenSeenOnSendHook(void) {
-    //NullHookMessageEx(objc_getClass("IGDirectComposer"), @selector(_didTapSend:), (void *)hook_seenOnSend, &orig_seenOnSend);
-	Class klass = objc_getClass("IGDirectComposer");
-	if ([klass respondsToSelector:@selector(_didTapSend:)]) {
-		NullHookMessageEx(klass, @selector(_didTapSend:), (void *)hook_seenOnSend, &orig_seenOnSend);
-	} else if ([klass respondsToSelector:@selector(_didTapSend)]) {
-		NullHookMessageEx(klass, @selector(_didTapSend), (void *)hook_seenOnSend2, &orig_seenOnSend2);
+	Class composer = s_composerClass();
+	NullHookMessageIfPresent(composer, @selector(didTapSend), (void *)hook_seenOnSend2, &orig_seenOnSend2);
+	if (!orig_seenOnSend2) {
+		NullHookMessageIfPresent(composer, @selector(_didTapSend), (void *)hook_seenOnSend2, &orig_seenOnSend2);
 	}
+	if (!orig_seenOnSend2) {
+		NullHookMessageIfPresent(objc_getClass("IGDirectComposerSendController"), @selector(didTapSend), (void *)hook_seenOnSend2, &orig_seenOnSend2);
+	}
+	NullHookMessageIfPresent(composer, @selector(_didTapSend:), (void *)hook_seenOnSend, &orig_seenOnSend);
 }

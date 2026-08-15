@@ -1,6 +1,7 @@
 #import "Include/ThetaHelper.h"
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
+#import <objc/message.h>
 #import <objc/runtime.h>
 
 static NSURL *gThetaSelectedVideoURL;
@@ -21,6 +22,11 @@ static id ThetaBuildWaveformFromAudioURL(NSURL *audioURL, CGFloat intervalSec) {
 		if (!audioURL) return nil;
 		
 		AVURLAsset *asset = [AVURLAsset URLAssetWithURL:audioURL options:nil];
+		dispatch_semaphore_t loadSem = dispatch_semaphore_create(0);
+		[asset loadValuesAsynchronouslyForKeys:@[@"tracks", @"duration"] completionHandler:^{
+			dispatch_semaphore_signal(loadSem);
+		}];
+		dispatch_semaphore_wait(loadSem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_SEC)));
 		AVAssetTrack *audioTrack = [[asset tracksWithMediaType:AVMediaTypeAudio] firstObject];
 		if (!audioTrack) return nil;
 		
@@ -59,6 +65,10 @@ static id ThetaBuildWaveformFromAudioURL(NSURL *audioURL, CGFloat intervalSec) {
 			if (!sbuf) break;
 			
 			CMBlockBufferRef bbuf = CMSampleBufferGetDataBuffer(sbuf);
+			if (!bbuf) {
+				CFRelease(sbuf);
+				continue;
+			}
 			size_t length = CMBlockBufferGetDataLength(bbuf);
 			if (length == 0) {
 				CFRelease(sbuf);
@@ -135,6 +145,24 @@ static inline SEL ThetaUploadAudioSel(void) {
 	static dispatch_once_t onceToken;
 	dispatch_once(&onceToken, ^{
 		s = @selector(voiceRecordViewController:didRecordAudioClipWithURL:waveform:duration:entryPoint:sendButtonTypeTapped:);
+	});
+	return s;
+}
+
+static inline SEL ThetaUploadAudioSelAI(void) {
+	static SEL s;
+	static dispatch_once_t onceToken;
+	dispatch_once(&onceToken, ^{
+		s = NSSelectorFromString(@"voiceRecordViewController:didRecordAudioClipWithURL:waveform:duration:entryPoint:aiVoiceEffectApplied:sendButtonTypeTapped:");
+	});
+	return s;
+}
+
+static inline SEL ThetaUploadAudioSelAIType(void) {
+	static SEL s;
+	static dispatch_once_t onceToken;
+	dispatch_once(&onceToken, ^{
+		s = NSSelectorFromString(@"voiceRecordViewController:didRecordAudioClipWithURL:waveform:duration:entryPoint:aiVoiceEffectApplied:aiVoiceEffectType:sendButtonTypeTapped:");
 	});
 	return s;
 }
@@ -216,7 +244,16 @@ static void hook_voiceMessageButton(id self, SEL _cmd, NSInteger entryPoint) {
 
 static void (*orig_uploadAudioMessage)(id self, SEL _cmd, id viewController, id audioClipURL, id waveform, CGFloat duration, NSInteger entryPoint, NSInteger sendButtonTypeTapped);
 static void (*orig_uploadAudioMessage2)(id self, SEL _cmd, id viewController, id audioClipURL, id waveform, CGFloat duration, NSInteger entryPoint, id aiVoiceEffectApplied, NSInteger sendButtonTypeTapped);
-// Try sending directly without toggling the microphone UI
+static void (*orig_uploadAudioMessage3)(id self, SEL _cmd, id viewController, id audioClipURL, id waveform, CGFloat duration, NSInteger entryPoint, id aiVoiceEffectApplied, id aiVoiceEffectType, NSInteger sendButtonTypeTapped);
+
+static void ThetaClearPickedAudioState(void) {
+	gThetaSelectedVideoURL = nil;
+	gThetaSelectedVideoDuration = 0.0;
+	gThetaComputedWaveform = nil;
+}
+
+// Try sending directly without toggling the microphone UI.
+// IG 441+ uses aiVoiceEffectType; never call a NULL orig IMP (that SIGKILLs with pc=0).
 static void ThetaDirectSendOnController(id target, NSInteger entryPoint, NSURL *url, id waveform, CGFloat duration, id aiVoiceEffectApplied) {
 	if (!target || !url) return;
 	dispatch_async(dispatch_get_main_queue(), ^{
@@ -228,19 +265,53 @@ static void ThetaDirectSendOnController(id target, NSInteger entryPoint, NSURL *
 				if (v) { viewController = v; break; }
 			} @catch (__unused id e) {}
 		}
-		NSInteger sendButtonType = 0; // default
+		NSInteger sendButtonType = 0;
 		NSLog(@"[Theta] Directly invoking upload with selected audio (bypassing mic UI).");
-		if ([appVersion compare:@"4.12.0" options:NSNumericSearch] == NSOrderedAscending) {
-			orig_uploadAudioMessage(target, ThetaUploadAudioSel(), viewController, url, waveform, duration, entryPoint, sendButtonType);
-		} else if ([appVersion compare:@"4.13.0" options:NSNumericSearch] == NSOrderedDescending) {
-			orig_uploadAudioMessage2(target, ThetaUploadAudioSel(), viewController, url, waveform, duration, entryPoint, aiVoiceEffectApplied, sendButtonType);
+
+		SEL selAIType = ThetaUploadAudioSelAIType();
+		SEL selAI = ThetaUploadAudioSelAI();
+		SEL selPlain = ThetaUploadAudioSel();
+		BOOL sent = NO;
+
+		if (orig_uploadAudioMessage3) {
+			orig_uploadAudioMessage3(target, selAIType, viewController, url, waveform, duration, entryPoint, aiVoiceEffectApplied, nil, sendButtonType);
+			sent = YES;
+		} else if ([target respondsToSelector:selAIType]) {
+			((void (*)(id, SEL, id, id, id, CGFloat, NSInteger, id, id, NSInteger))objc_msgSend)(
+				target, selAIType, viewController, url, waveform, duration, entryPoint, aiVoiceEffectApplied, nil, sendButtonType);
+			sent = YES;
+		} else if (orig_uploadAudioMessage2) {
+			orig_uploadAudioMessage2(target, selAI, viewController, url, waveform, duration, entryPoint, aiVoiceEffectApplied, sendButtonType);
+			sent = YES;
+		} else if ([target respondsToSelector:selAI]) {
+			((void (*)(id, SEL, id, id, id, CGFloat, NSInteger, id, NSInteger))objc_msgSend)(
+				target, selAI, viewController, url, waveform, duration, entryPoint, aiVoiceEffectApplied, sendButtonType);
+			sent = YES;
+		} else if (orig_uploadAudioMessage) {
+			orig_uploadAudioMessage(target, selPlain, viewController, url, waveform, duration, entryPoint, sendButtonType);
+			sent = YES;
+		} else if ([target respondsToSelector:selPlain]) {
+			((void (*)(id, SEL, id, id, id, CGFloat, NSInteger, NSInteger))objc_msgSend)(
+				target, selPlain, viewController, url, waveform, duration, entryPoint, sendButtonType);
+			sent = YES;
 		}
+
+		if (!sent) {
+			NSLog(@"[Theta] No voice-note upload selector on %@", [target class]);
+			[ThetaHelper showToastWithTitle:@"Couldn't send"
+								  subtitle:@"Instagram's voice upload API changed."
+									  icon:[ThetaHelper imageFromEmojiString:@"⚠️" width:300]
+								  autoHide:3
+								   openURL:nil];
+		}
+		ThetaClearPickedAudioState();
 	});
 }
 
 static void hook_uploadAudioMessage(id self, SEL _cmd, id viewController, id audioClipURL, id waveform, CGFloat duration, NSInteger entryPoint, NSInteger sendButtonTypeTapped) {
 	if (!ENABLED(@"Upload Audio Messages")) {
-		orig_uploadAudioMessage(self, _cmd, viewController, audioClipURL, waveform, duration, entryPoint, sendButtonTypeTapped);
+		if (orig_uploadAudioMessage)
+			orig_uploadAudioMessage(self, _cmd, viewController, audioClipURL, waveform, duration, entryPoint, sendButtonTypeTapped);
 		return;
 	}
 
@@ -251,17 +322,15 @@ static void hook_uploadAudioMessage(id self, SEL _cmd, id viewController, id aud
     if (gThetaSelectedVideoURL) {
 		NSLog(@"[Theta] Hook using saved picked video: %@ (%.2fs)", gThetaSelectedVideoURL, gThetaSelectedVideoDuration);
     }
-	orig_uploadAudioMessage(self, _cmd, viewController, useURL, useWaveform, useDuration, entryPoint, sendButtonTypeTapped);
-
-    // Clear after use to avoid reusing stale data
-    gThetaSelectedVideoURL = nil;
-    gThetaSelectedVideoDuration = 0.0;
-	gThetaComputedWaveform = nil;
+	if (orig_uploadAudioMessage)
+		orig_uploadAudioMessage(self, _cmd, viewController, useURL, useWaveform, useDuration, entryPoint, sendButtonTypeTapped);
+	ThetaClearPickedAudioState();
 }
 
 static void hook_uploadAudioMessage2(id self, SEL _cmd, id viewController, id audioClipURL, id waveform, CGFloat duration, NSInteger entryPoint, id aiVoiceEffectApplied, NSInteger sendButtonTypeTapped) {
 	if (!ENABLED(@"Upload Audio Messages")) {
-		orig_uploadAudioMessage2(self, _cmd, viewController, audioClipURL, waveform, duration, entryPoint, aiVoiceEffectApplied, sendButtonTypeTapped);
+		if (orig_uploadAudioMessage2)
+			orig_uploadAudioMessage2(self, _cmd, viewController, audioClipURL, waveform, duration, entryPoint, aiVoiceEffectApplied, sendButtonTypeTapped);
 		return;
 	}
 
@@ -272,12 +341,27 @@ static void hook_uploadAudioMessage2(id self, SEL _cmd, id viewController, id au
     if (gThetaSelectedVideoURL) {
 		NSLog(@"[Theta] Hook using saved picked video: %@ (%.2fs)", gThetaSelectedVideoURL, gThetaSelectedVideoDuration);
     }
-	orig_uploadAudioMessage2(self, _cmd, viewController, useURL, useWaveform, useDuration, entryPoint, aiVoiceEffectApplied, sendButtonTypeTapped);
+	if (orig_uploadAudioMessage2)
+		orig_uploadAudioMessage2(self, _cmd, viewController, useURL, useWaveform, useDuration, entryPoint, aiVoiceEffectApplied, sendButtonTypeTapped);
+	ThetaClearPickedAudioState();
+}
 
-    // Clear after use to avoid reusing stale data
-    gThetaSelectedVideoURL = nil;
-    gThetaSelectedVideoDuration = 0.0;
-	gThetaComputedWaveform = nil;
+static void hook_uploadAudioMessage3(id self, SEL _cmd, id viewController, id audioClipURL, id waveform, CGFloat duration, NSInteger entryPoint, id aiVoiceEffectApplied, id aiVoiceEffectType, NSInteger sendButtonTypeTapped) {
+	if (!ENABLED(@"Upload Audio Messages")) {
+		if (orig_uploadAudioMessage3)
+			orig_uploadAudioMessage3(self, _cmd, viewController, audioClipURL, waveform, duration, entryPoint, aiVoiceEffectApplied, aiVoiceEffectType, sendButtonTypeTapped);
+		return;
+	}
+
+	NSURL *useURL = gThetaSelectedVideoURL ?: audioClipURL;
+	CGFloat useDuration = gThetaSelectedVideoDuration > 0.0 ? gThetaSelectedVideoDuration : duration;
+	id useWaveform = gThetaComputedWaveform ?: waveform;
+	if (gThetaSelectedVideoURL) {
+		NSLog(@"[Theta] Hook using saved picked video: %@ (%.2fs)", gThetaSelectedVideoURL, gThetaSelectedVideoDuration);
+	}
+	if (orig_uploadAudioMessage3)
+		orig_uploadAudioMessage3(self, _cmd, viewController, useURL, useWaveform, useDuration, entryPoint, aiVoiceEffectApplied, aiVoiceEffectType, sendButtonTypeTapped);
+	ThetaClearPickedAudioState();
 }
 
 @implementation ThetaAudioPickerDelegate
@@ -486,9 +570,12 @@ void THRegisterUploadAudioMessageHooks(void) {
 
     NullHookMessageIfPresent(voiceCtl, @selector(startRecordingWithButtonTapFromEntryPoint:), (void *)hook_voiceMessageButton, &orig_voiceMessageButton);
 
-    SEL recordSelAI = NSSelectorFromString(@"voiceRecordViewController:didRecordAudioClipWithURL:waveform:duration:entryPoint:aiVoiceEffectApplied:sendButtonTypeTapped:");
-    SEL recordSelPlain = NSSelectorFromString(@"voiceRecordViewController:didRecordAudioClipWithURL:waveform:duration:entryPoint:sendButtonTypeTapped:");
-    if (class_getInstanceMethod(voiceCtl, recordSelAI))
+    SEL recordSelAIType = ThetaUploadAudioSelAIType();
+    SEL recordSelAI = ThetaUploadAudioSelAI();
+    SEL recordSelPlain = ThetaUploadAudioSel();
+    if (class_getInstanceMethod(voiceCtl, recordSelAIType))
+        NullHookMessageIfPresent(voiceCtl, recordSelAIType, (void *)hook_uploadAudioMessage3, &orig_uploadAudioMessage3);
+    else if (class_getInstanceMethod(voiceCtl, recordSelAI))
         NullHookMessageIfPresent(voiceCtl, recordSelAI, (void *)hook_uploadAudioMessage2, &orig_uploadAudioMessage2);
     else if (class_getInstanceMethod(voiceCtl, recordSelPlain))
         NullHookMessageIfPresent(voiceCtl, recordSelPlain, (void *)hook_uploadAudioMessage, &orig_uploadAudioMessage);

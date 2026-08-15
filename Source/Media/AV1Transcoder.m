@@ -81,30 +81,26 @@ static BOOL loadFFmpegLibraries(NSError **error) {
         return YES;
     }
     
-    // Determine base path based on build configuration
-    NSString *basePath;
-    #if defined(SIDELOAD)
-        // For sideloaded builds, ffmpeg is in the root app directory (same level as Instagram executable)
-        basePath = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"ffmpeg.framework"];
-    #else
-        // Jailbroken: try bundle first (in case framework was embedded), then rootless, then rootful
-        NSFileManager *fm = [NSFileManager defaultManager];
-        NSString *bundlePath = [[NSBundle mainBundle].bundlePath stringByAppendingPathComponent:@"ffmpeg.framework"];
-        NSString *rootlessPath = @"/var/jb/Library/Application Support/ffmpeg.framework";
-        NSString *rootfulPath = @"/Library/Application Support/ffmpeg.framework";
-        
-        if ([fm fileExistsAtPath:bundlePath]) {
-            basePath = bundlePath;
-        } else if ([fm fileExistsAtPath:rootlessPath]) {
-            basePath = rootlessPath;
-        } else if ([fm fileExistsAtPath:rootfulPath]) {
-            basePath = rootfulPath;
-        } else {
-            NSLog(@"Failed to find ffmpeg framework at bundle, rootless or rootful paths");
-            if (error) *error = [NSError errorWithDomain:@"AV1Transcoder" code:-1 userInfo:@{NSLocalizedDescriptionKey: @"ffmpeg framework not found"}];
-            return NO;
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *bundleRoot = [NSBundle mainBundle].bundlePath;
+    NSMutableArray<NSString *> *candidates = [NSMutableArray arrayWithObjects:
+        [bundleRoot stringByAppendingPathComponent:@"ffmpeg.framework"],
+        [bundleRoot stringByAppendingPathComponent:@"Frameworks/ffmpeg.framework"],
+        @"/var/jb/Library/Application Support/ffmpeg.framework",
+        @"/Library/Application Support/ffmpeg.framework",
+        nil];
+    NSString *basePath = nil;
+    for (NSString *path in candidates) {
+        if ([fm fileExistsAtPath:path]) {
+            basePath = path;
+            break;
         }
-    #endif
+    }
+    if (!basePath) {
+        NSLog(@"Failed to find ffmpeg framework in %@", candidates);
+        if (error) *error = [NSError errorWithDomain:@"AV1Transcoder" code:-1 userInfo:@{NSLocalizedDescriptionKey: @"ffmpeg framework not found"}];
+        return NO;
+    }
     
     // Load libraries in dependency order. Use RTLD_GLOBAL so interdependencies resolve when
     // loading from separate framework dirs (e.g. libavcodec needs libavutil); RTLD_LOCAL

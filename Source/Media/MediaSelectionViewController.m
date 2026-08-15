@@ -1577,10 +1577,10 @@ static void * const playerKey = &playerKey;
                 }
                 
                 NSURL *audioTestURL = audioURLString.length > 0 ? [NSURL URLWithString:audioURLString] : nil;
-                BOOL hasAudio = (audioURLString.length > 0 && audioTestURL != nil);
+                __block BOOL hasAudio = (audioURLString.length > 0 && audioTestURL != nil);
                 
                 NSString *videoPath = [documentsPath stringByAppendingPathComponent:[NSString stringWithFormat:@"bulk_video_%ld.mp4", (long)videoIndex]];
-                NSString *audioPath = hasAudio ? [documentsPath stringByAppendingPathComponent:[NSString stringWithFormat:@"bulk_audio_%ld.aac", (long)videoIndex]] : nil;
+                __block NSString *audioPath = hasAudio ? [documentsPath stringByAppendingPathComponent:[NSString stringWithFormat:@"bulk_audio_%ld.m4a", (long)videoIndex]] : nil;
                 
                 // Remove any existing files
                 if ([fm fileExistsAtPath:videoPath]) [fm removeItemAtPath:videoPath error:nil];
@@ -1652,9 +1652,11 @@ static void * const playerKey = &playerKey;
                     return;
                 }
                 if (hasAudio) {
-                    NSDictionary *audioAttrs = [fm attributesOfItemAtPath:audioPath error:nil];
-                    if (!audioAttrs || [audioAttrs fileSize] == 0) {
-                        NSLog(@"Bulk %ld: audio file missing or empty; video only", (long)videoIndex);
+                    NSString *preparedAudio = ThetaPrepareDashAudioForMerge(audioPath);
+                    if (preparedAudio.length) {
+                        audioPath = preparedAudio;
+                    } else {
+                        NSLog(@"Bulk %ld: audio file missing, empty, or undecodable; video only", (long)videoIndex);
                         hasAudio = NO;
                     }
                 }
@@ -1716,27 +1718,30 @@ static void * const playerKey = &playerKey;
                     dispatch_semaphore_signal(transcodeSemaphore);
                     
                     if (!transcodeSuccess) {
-                        NSLog(@"AV1 transcoding failed for video %ld: %@", (long)videoIndex, transcodeError);
-                        
-                        // Cleanup
-                        [fm removeItemAtPath:videoPath error:nil];
-                        if (audioPath) [fm removeItemAtPath:audioPath error:nil];
-                        
-                        dispatch_async(statsQueue, ^{
-                            videoProgress[@(videoIndex)][@"state"] = @"done";
-                            videoProgress[@(videoIndex)][@"status"] = @"Transcoding failed";
-                            failedVideos++;
-                            completedVideos++;
-                            dispatch_async(dispatch_get_main_queue(), ^{
-                                [progressToast updateProgressWithTitle:@"Bulk saving videos!" subtitle:formatProgressDisplay()];
-                                
-                                if (completedVideos >= totalVideos) {
-                                    [self showCompletionToast:progressToast completed:completedVideos total:totalVideos failed:failedVideos];
-                                    [MediaSelectionViewController setDownloadInProgress:NO];
-                                }
-                            });
-                        });
-                        return;
+                        NSLog(@"AV1 transcoding failed for video %ld (%@); trying native export", (long)videoIndex, transcodeError);
+                        if ([fm fileExistsAtPath:outputPath]) [fm removeItemAtPath:outputPath error:nil];
+                        if (!ThetaExportPhotosCompatibleMP4(videoPath, audioPath, hasAudio, outputPath)) {
+                            NSError *copyErr = nil;
+                            if (![fm copyItemAtPath:videoPath toPath:outputPath error:&copyErr]) {
+                                NSLog(@"Bulk %ld: could not copy original after transcode failure: %@", (long)videoIndex, copyErr);
+                                [fm removeItemAtPath:videoPath error:nil];
+                                if (audioPath) [fm removeItemAtPath:audioPath error:nil];
+                                dispatch_async(statsQueue, ^{
+                                    videoProgress[@(videoIndex)][@"state"] = @"done";
+                                    videoProgress[@(videoIndex)][@"status"] = @"Transcoding failed";
+                                    failedVideos++;
+                                    completedVideos++;
+                                    dispatch_async(dispatch_get_main_queue(), ^{
+                                        [progressToast updateProgressWithTitle:@"Bulk saving videos!" subtitle:formatProgressDisplay()];
+                                        if (completedVideos >= totalVideos) {
+                                            [self showCompletionToast:progressToast completed:completedVideos total:totalVideos failed:failedVideos];
+                                            [MediaSelectionViewController setDownloadInProgress:NO];
+                                        }
+                                    });
+                                });
+                                return;
+                            }
+                        }
                     }
                     
                 } else {

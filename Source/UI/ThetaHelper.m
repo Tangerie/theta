@@ -169,17 +169,25 @@ static volatile BOOL sGlobalDownloadInProgress = NO;
 
 + (void)cleanupTemporaryMediaFiles {
     NSURL *documentsURL = [NSURL fileURLWithPath:[NSHomeDirectory() stringByAppendingPathComponent:@"Documents"] isDirectory:YES];
-    NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:documentsURL.path error:nil];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSArray *files = [fm contentsOfDirectoryAtPath:documentsURL.path error:nil];
     
     for (NSString *file in files) {
-        if ([file hasSuffix:@".mp4"] || [file hasSuffix:@".aac"]) {
+        if ([file hasSuffix:@".mp4"] || [file hasSuffix:@".aac"] || [file hasSuffix:@".m4a"]) {
+            if ([file hasPrefix:@"Video-"]) continue;
             NSURL *fileURL = [documentsURL URLByAppendingPathComponent:file];
-            NSError *error = nil;
-            [[NSFileManager defaultManager] removeItemAtURL:fileURL error:&error];
-            if (error) {
-                NSLog(@"Error removing file %@: %@", fileURL.path, error.localizedDescription);
-            } else {
-                NSLog(@"Removed file: %@", fileURL.path);
+            [fm removeItemAtURL:fileURL error:nil];
+        }
+    }
+    NSString *caches = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES) firstObject];
+    for (NSString *root in @[documentsURL.path, caches ?: @"", NSTemporaryDirectory()]) {
+        if (!root.length) continue;
+        NSArray *items = [fm contentsOfDirectoryAtPath:root error:nil];
+        for (NSString *item in items) {
+            if ([item hasPrefix:@"theta_save_"] || [item hasPrefix:@"theta-save"] || [item hasPrefix:@"theta_bulk_"] ||
+                [item isEqualToString:@"video.mp4"] || [item isEqualToString:@"audio.m4a"] || [item isEqualToString:@"audio.aac"] ||
+                [item isEqualToString:@"audio_lc.m4a"] || [item isEqualToString:@"output.mp4"] || [item isEqualToString:@"output_h264.mp4"]) {
+                [fm removeItemAtPath:[root stringByAppendingPathComponent:item] error:nil];
             }
         }
     }

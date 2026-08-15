@@ -287,8 +287,10 @@ static UIColor *THColorFromHexString(NSString *hexString) {
 
     UIImage *applyImage = [UIImage systemImageNamed:@"gearshape"];
     applyImage = [applyImage imageWithTintColor:[ThetaHelper iotaPinkColor] renderingMode:UIImageRenderingModeAlwaysOriginal];
+    // Plain matches the folder/chevron buttons. Done becomes a filled tinted chip on
+    // iOS 26+ (Liquid Glass), which makes a pink gear invisible on a pink circle.
     UIBarButtonItem *applyButton = [[UIBarButtonItem alloc] initWithImage:applyImage
-                                                                    style:UIBarButtonItemStyleDone
+                                                                    style:UIBarButtonItemStylePlain
                                                                    target:self
                                                                    action:nil];
 
@@ -1914,8 +1916,10 @@ didOutputMetadataObjects:(NSArray<__kindof AVMetadataObject *> *)metadataObjects
     
     UIImage *applyImage = [UIImage systemImageNamed:@"gearshape"];
     applyImage = [applyImage imageWithTintColor:[ThetaHelper iotaPinkColor] renderingMode:UIImageRenderingModeAlwaysOriginal];
+    // Plain matches the folder/chevron buttons. Done becomes a filled tinted chip on
+    // iOS 26+ (Liquid Glass), which makes a pink gear invisible on a pink circle.
     UIBarButtonItem *applyButton = [[UIBarButtonItem alloc] initWithImage:applyImage
-                                                                    style:UIBarButtonItemStyleDone
+                                                                    style:UIBarButtonItemStylePlain
                                                                    target:self
                                                                    action:nil];
     

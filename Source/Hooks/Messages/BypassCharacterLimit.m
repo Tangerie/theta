@@ -6,7 +6,9 @@ static NSMutableDictionary<NSString *, NSString *> *thetaPinnedKeyByVC = nil;
 static NSString *const kThetaGlobalKey = @"__theta_global__";
 static const NSTimeInterval kThetaShowThrottleSeconds = 5.0; // prevent rapid re-triggering
 extern BOOL theta_hasUnreadFromRecipient(id threadVC);
-static void theta_showMarkedAsSeenToastDeferred(void);
+void theta_showMarkedAsSeenToastDeferred(void);
+void theta_performMarkLastMessageAsSeen(id threadViewController, id listViewController);
+id theta_activeDirectThreadViewController(void);
 static const NSTimeInterval kThetaEmptyStableSeconds = 0.75; // require empty to be stable before reset
 static void (*orig_directComposer2)(id self, SEL _cmd);
 static void hook_directComposer2(id self, SEL _cmd) {
@@ -34,6 +36,14 @@ static void hook_directComposer2(id self, SEL _cmd) {
                     if (profileImageUserIvar) {
                         lastSender = object_getIvar(lastSenderImg, profileImageUserIvar);
                     }
+                }
+            }
+            if (!ballsThreadVC) {
+                Class threadCls = NSClassFromString(@"IGDirectThreadViewController");
+                UIResponder *r = viewController;
+                while (r) {
+                    if (threadCls && [r isKindOfClass:threadCls]) { ballsThreadVC = (id)r; break; }
+                    r = [r nextResponder];
                 }
             }
 
@@ -132,21 +142,34 @@ static void hook_directComposer2(id self, SEL _cmd) {
                 NSTimeInterval lastShown = lastShownNum != nil ? [lastShownNum doubleValue] : 0.0;
                 BOOL throttled = (now - lastShown) < kThetaShowThrottleSeconds;
 
-                if (transitionedFromEmptyToNonEmpty && lastSender && !alreadyShown && !throttled && theta_hasUnreadFromRecipient(ballsThreadVC)) {
-                    id delegate = msgListDataSource ? [msgListDataSource valueForKey:@"delegate"] : nil;
-                    if ([ballsThreadVC respondsToSelector:@selector(markLastMessageAsSeen)]) {
-                        [ballsThreadVC performSelector:@selector(markLastMessageAsSeen)];
-                    } else if (delegate && [delegate respondsToSelector:@selector(markLastMessageAsSeen)]) {
-                        [delegate performSelector:@selector(markLastMessageAsSeen)];
-                    } else {
-                        id tracker = delegate ? [delegate valueForKey:@"_lastSeenMessageTracker"] : nil;
-                        if (tracker && [tracker respondsToSelector:@selector(markLastMessageAsSeen)]) {
-                            [tracker performSelector:@selector(markLastMessageAsSeen)];
-                        }
-                    }
-                    theta_showMarkedAsSeenToastDeferred();
+                id unreadHint = theta_activeDirectThreadViewController() ?: ballsThreadVC;
+                if (transitionedFromEmptyToNonEmpty && lastSender && !alreadyShown && !throttled && theta_hasUnreadFromRecipient(unreadHint)) {
                     [thetaThreadsShownBanner addObject:stableKey];
                     thetaLastShownAtByKey[stableKey] = @(now);
+                    id composerView = self;
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        Class threadCls = NSClassFromString(@"IGDirectThreadViewController");
+                        id threadVC = nil;
+                        UIResponder *r = composerView;
+                        while (r) {
+                            if (threadCls && [r isKindOfClass:threadCls]) { threadVC = (id)r; break; }
+                            r = [r nextResponder];
+                        }
+                        if (!threadVC) threadVC = theta_activeDirectThreadViewController();
+                        if (!threadVC) threadVC = unreadHint;
+                        if (!threadVC) return;
+                        theta_performMarkLastMessageAsSeen(threadVC, nil);
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                            id retryVC = threadVC;
+                            if (!retryVC || ![retryVC isKindOfClass:[UIViewController class]]) {
+                                retryVC = theta_activeDirectThreadViewController();
+                            }
+                            if (retryVC && theta_hasUnreadFromRecipient(retryVC)) {
+                                theta_performMarkLastMessageAsSeen(retryVC, nil);
+                            }
+                            theta_showMarkedAsSeenToastDeferred();
+                        });
+                    });
                 }
                 thetaLastTextByKey[stableKey] = normalizedCurrent;
             }
@@ -187,5 +210,9 @@ static void hook_directComposer2(id self, SEL _cmd) {
 }
 
 void THRegisterBypassCharacterLimitHooks(void) {
-    NullHookMessageEx(objc_getClass("IGDirectComposer"), @selector(layoutSubviews), (void *)hook_directComposer2, &orig_directComposer2);
+    Class composer = ThetaFirstClass(@[
+        @"IGDirectComposer",
+        @"_TtC16IGDirectComposer16IGDirectComposer",
+    ]);
+    NullHookMessageIfPresent(composer, @selector(layoutSubviews), (void *)hook_directComposer2, &orig_directComposer2);
 }
