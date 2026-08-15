@@ -8,10 +8,22 @@ Tested against Instagram **441.0.0**.
 
 - [Theos](https://theos.dev) with `THEOS` set (for example `export THEOS=/opt/theos`)
 - Theos `Xcode14.xctoolchain` at `$THEOS/toolchain/Xcode14.xctoolchain`
+- The **patched iPhoneOS 14.5 SDK** from this repo (see below). A stock Xcode SDK will not work — Theta is built with `SDKVERSION = 14.5` and needs Theos-patched private-framework stubs.
 - Python 3 (used by `scripts/assemble.py` during the build)
 - A Mac with Xcode command-line tools
 
 Jailbreak packages also need **Cydia Substrate** on the device (`Depends: mobilesubstrate`). Sideload builds bundle Substrate into the IPA.
+
+### Patched iPhoneOS 14.5 SDK
+
+After cloning or forking, unpack the SDK into your Theos `sdks` directory:
+
+```sh
+mkdir -p "$THEOS/sdks"
+tar -xJf sdks/iPhoneOS14.5.sdk.tar.xz -C "$THEOS/sdks"
+```
+
+That creates `$THEOS/sdks/iPhoneOS14.5.sdk`. Do not unpack it inside the Theta repo; Theos only looks under `$THEOS/sdks`.
 
 ## Build
 
