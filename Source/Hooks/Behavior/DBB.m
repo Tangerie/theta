@@ -59,13 +59,21 @@ void THRegisterDeferredDBBHooks(void) {
     SEL selForce = @selector(handleForceLogoutLoginWithUserID:token:authLoginType:);
 
     BOOL didHookPush = NO;
-    Class pushHandler = objc_getClass("IGForcedLogoutPushHandler");
-    if (pushHandler) {
-        if (class_getInstanceMethod(pushHandler, selForce)) {
-            NullHookMessageEx(pushHandler, selForce, (void *)hook_forcedLogoutPushHandler, (void *)&orig_forcedLogoutPushHandler);
+    BOOL didHookForce = NO;
+    const char *pushHandlerNames[] = {
+        "_TtC17IGPushCoordinator25IGForcedLogoutPushHandler",
+        "IGForcedLogoutPushHandler",
+        NULL
+    };
+    for (int i = 0; pushHandlerNames[i]; i++) {
+        Class pushHandler = objc_getClass(pushHandlerNames[i]);
+        if (!pushHandler) continue;
+        if (!didHookForce && class_getInstanceMethod(pushHandler, selForce)) {
+            NullHookMessageIfPresent(pushHandler, selForce, (void *)hook_forcedLogoutPushHandler, (void *)&orig_forcedLogoutPushHandler);
+            didHookForce = YES;
         }
-        if (class_getInstanceMethod(pushHandler, selPush)) {
-            NullHookMessageEx(pushHandler, selPush, (void *)hook_handleForcedLogoutLoginPush, (void *)&orig_handleForcedLogoutLoginPush);
+        if (!didHookPush && class_getInstanceMethod(pushHandler, selPush)) {
+            NullHookMessageIfPresent(pushHandler, selPush, (void *)hook_handleForcedLogoutLoginPush, (void *)&orig_handleForcedLogoutLoginPush);
             didHookPush = YES;
         }
     }

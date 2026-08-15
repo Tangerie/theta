@@ -7,18 +7,26 @@ static void loadKeychainAccessGroup() {
 			(__bridge id)kSecReturnAttributes : @YES,
 		};
 
-		CFTypeRef result;
+		CFTypeRef result = NULL;
 		OSStatus ret = SecItemCopyMatching((__bridge CFDictionaryRef)dummyItem, &result);
-		if (ret == -25300) {
+		if (ret == errSecItemNotFound) {
 			ret = SecItemAdd((__bridge CFDictionaryRef)dummyItem, &result);
+		}
+		if ((ret == errSecSuccess && !result) || ret == errSecDuplicateItem) {
+			if (result) { CFRelease(result); result = NULL; }
+			ret = SecItemCopyMatching((__bridge CFDictionaryRef)dummyItem, &result);
 		}
 
 		if (ret == 0 && result) {
 			NSDictionary* resultDict = (__bridge id)result;
 			keychainAccessGroup = resultDict[(__bridge id)kSecAttrAccessGroup];
 			CFRelease(result);
+			fprintf(stderr, "[Theta] sideload keychain access group: %s\n",
+			        keychainAccessGroup.UTF8String ?: "(null)");
+			fflush(stderr);
 		} else {
-			NSLog(@"Failed to get keychain access group: %d", (int)ret);
+			fprintf(stderr, "[Theta] Failed to get keychain access group: %d\n", (int)ret);
+			fflush(stderr);
 		}
 	} @catch (NSException *exception) {
 		NSLog(@"Error loading keychain access group: %@", exception);
@@ -113,4 +121,50 @@ NSString *hook_accessGroup_UICKeyChainStore(id self, SEL _cmd) {
 		NSLog(@"Error in accessGroup hook (UICKeyChainStore): %@", exception);
 		return orig_accessGroup_UICKeyChainStore ? orig_accessGroup_UICKeyChainStore(self, _cmd) : nil;
 	}
+}
+
+static NSString *SideloadRemapAccessGroup(NSString *group) {
+	return keychainAccessGroup.length ? keychainAccessGroup : group;
+}
+
+id (*orig_LS_initWithServiceIDAccessGroupUserIDSync)(id self, SEL _cmd, id serviceID, id accessGroup, id userID, BOOL sync);
+id hook_LS_initWithServiceIDAccessGroupUserIDSync(id self, SEL _cmd, id serviceID, id accessGroup, id userID, BOOL sync) {
+	if (!orig_LS_initWithServiceIDAccessGroupUserIDSync) return nil;
+	return orig_LS_initWithServiceIDAccessGroupUserIDSync(self, _cmd, serviceID, SideloadRemapAccessGroup(accessGroup), userID, NO);
+}
+
+id (*orig_LS_initWithServiceIDAccessGroupUserID)(id self, SEL _cmd, id serviceID, id accessGroup, id userID);
+id hook_LS_initWithServiceIDAccessGroupUserID(id self, SEL _cmd, id serviceID, id accessGroup, id userID) {
+	if (!orig_LS_initWithServiceIDAccessGroupUserID) return nil;
+	return orig_LS_initWithServiceIDAccessGroupUserID(self, _cmd, serviceID, SideloadRemapAccessGroup(accessGroup), userID);
+}
+
+id (*orig_LS_initSynchronizableItem)(id self, SEL _cmd, id serviceID, id accessGroup, id userID);
+id hook_LS_initSynchronizableItem(id self, SEL _cmd, id serviceID, id accessGroup, id userID) {
+	if (!orig_LS_initSynchronizableItem) return nil;
+	return orig_LS_initSynchronizableItem(self, _cmd, serviceID, SideloadRemapAccessGroup(accessGroup), userID);
+}
+
+id (*orig_UIC_keyChainStoreWithServiceAccessGroup)(id self, SEL _cmd, id service, id accessGroup);
+id hook_UIC_keyChainStoreWithServiceAccessGroup(id self, SEL _cmd, id service, id accessGroup) {
+	if (!orig_UIC_keyChainStoreWithServiceAccessGroup) return nil;
+	return orig_UIC_keyChainStoreWithServiceAccessGroup(self, _cmd, service, SideloadRemapAccessGroup(accessGroup));
+}
+
+id (*orig_NSDictionary_queryWithAccessGroupKey)(id self, SEL _cmd, id accessGroup);
+id hook_NSDictionary_queryWithAccessGroupKey(id self, SEL _cmd, id accessGroup) {
+	if (!orig_NSDictionary_queryWithAccessGroupKey) return nil;
+	return orig_NSDictionary_queryWithAccessGroupKey(self, _cmd, SideloadRemapAccessGroup(accessGroup));
+}
+
+id (*orig_FWA_keychainSecureStoreByInferring)(id self, SEL _cmd, id accessGroup);
+id hook_FWA_keychainSecureStoreByInferring(id self, SEL _cmd, id accessGroup) {
+	if (!orig_FWA_keychainSecureStoreByInferring) return nil;
+	return orig_FWA_keychainSecureStoreByInferring(self, _cmd, SideloadRemapAccessGroup(accessGroup));
+}
+
+id (*orig_IGCloudTrust_initWithAccessGroup)(id self, SEL _cmd, id accessGroup);
+id hook_IGCloudTrust_initWithAccessGroup(id self, SEL _cmd, id accessGroup) {
+	if (!orig_IGCloudTrust_initWithAccessGroup) return nil;
+	return orig_IGCloudTrust_initWithAccessGroup(self, _cmd, SideloadRemapAccessGroup(accessGroup));
 }

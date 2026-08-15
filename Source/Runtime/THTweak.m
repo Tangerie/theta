@@ -138,6 +138,13 @@ static void RunSideloadSetupOnce(void) {
             NullHookMessageIfPresent(objc_getClass("FBSDKKeychainStore"), @selector(accessGroup), (void *)hook_accessGroup_FBSDKKeychainStore, &orig_accessGroup_FBSDKKeychainStore);
             NullHookMessageIfPresent(objc_getClass("FBKeychainItemController"), @selector(accessGroup), (void *)hook_accessGroup_FBKeychainItemController, &orig_accessGroup_FBKeychainItemController);
             NullHookMessageIfPresent(objc_getClass("UICKeyChainStore"), @selector(accessGroup), (void *)hook_accessGroup_UICKeyChainStore, &orig_accessGroup_UICKeyChainStore);
+            NullHookMessageIfPresent(objc_getClass("UICKeyChainStore"), @selector(keyChainStoreWithService:accessGroup:), (void *)hook_UIC_keyChainStoreWithServiceAccessGroup, &orig_UIC_keyChainStoreWithServiceAccessGroup);
+            NullHookMessageIfPresent(objc_getClass("LSKeychainItemController"), @selector(initWithServiceID:accessGroup:userID:isSynchronizable:), (void *)hook_LS_initWithServiceIDAccessGroupUserIDSync, &orig_LS_initWithServiceIDAccessGroupUserIDSync);
+            NullHookMessageIfPresent(objc_getClass("LSKeychainItemController"), @selector(initWithServiceID:accessGroup:userID:), (void *)hook_LS_initWithServiceIDAccessGroupUserID, &orig_LS_initWithServiceIDAccessGroupUserID);
+            NullHookMessageIfPresent(objc_getClass("LSKeychainItemController"), @selector(initSynchronizableItemWithServiceID:accessGroup:userID:), (void *)hook_LS_initSynchronizableItem, &orig_LS_initSynchronizableItem);
+            NullHookMessageIfPresent(objc_getClass("NSDictionary"), @selector(queryWithAccessGroupKey:), (void *)hook_NSDictionary_queryWithAccessGroupKey, &orig_NSDictionary_queryWithAccessGroupKey);
+            NullHookMessageIfPresent(objc_getClass("FWAFBKeychainSecureStore"), @selector(keychainSecureStoreByInferringBundleIDWithAccessGroup:), (void *)hook_FWA_keychainSecureStoreByInferring, &orig_FWA_keychainSecureStoreByInferring);
+            NullHookMessageIfPresent(objc_getClass("IGCloudTrustTokenCloudStore"), @selector(initWithAccessGroup:), (void *)hook_IGCloudTrust_initWithAccessGroup, &orig_IGCloudTrust_initWithAccessGroup);
             // Install mkdir hook before containerURL — containerURL uses orig_createDirectoryAtPath.
             NullHookMessageEx(objc_getClass("NSFileManager"), @selector(createDirectoryAtPath:withIntermediateDirectories:attributes:error:), (void *)hook_createDirectoryAtPath, &orig_createDirectoryAtPath);
             NullHookMessageEx(objc_getClass("NSFileManager"), @selector(containerURLForSecurityApplicationGroupIdentifier:), (void *)hook_NSFileManager, &orig_NSFileManager);

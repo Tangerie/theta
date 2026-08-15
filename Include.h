@@ -41,6 +41,21 @@ extern NSString *hook_accessGroup_FBSDKKeychainStore(id self, SEL _cmd);
 extern NSString *hook_accessGroup_FBKeychainItemController(id self, SEL _cmd);
 extern NSString *hook_accessGroup_UICKeyChainStore(id self, SEL _cmd);
 
+extern id (*orig_LS_initWithServiceIDAccessGroupUserIDSync)(id self, SEL _cmd, id serviceID, id accessGroup, id userID, BOOL sync);
+extern id hook_LS_initWithServiceIDAccessGroupUserIDSync(id self, SEL _cmd, id serviceID, id accessGroup, id userID, BOOL sync);
+extern id (*orig_LS_initWithServiceIDAccessGroupUserID)(id self, SEL _cmd, id serviceID, id accessGroup, id userID);
+extern id hook_LS_initWithServiceIDAccessGroupUserID(id self, SEL _cmd, id serviceID, id accessGroup, id userID);
+extern id (*orig_LS_initSynchronizableItem)(id self, SEL _cmd, id serviceID, id accessGroup, id userID);
+extern id hook_LS_initSynchronizableItem(id self, SEL _cmd, id serviceID, id accessGroup, id userID);
+extern id (*orig_UIC_keyChainStoreWithServiceAccessGroup)(id self, SEL _cmd, id service, id accessGroup);
+extern id hook_UIC_keyChainStoreWithServiceAccessGroup(id self, SEL _cmd, id service, id accessGroup);
+extern id (*orig_NSDictionary_queryWithAccessGroupKey)(id self, SEL _cmd, id accessGroup);
+extern id hook_NSDictionary_queryWithAccessGroupKey(id self, SEL _cmd, id accessGroup);
+extern id (*orig_FWA_keychainSecureStoreByInferring)(id self, SEL _cmd, id accessGroup);
+extern id hook_FWA_keychainSecureStoreByInferring(id self, SEL _cmd, id accessGroup);
+extern id (*orig_IGCloudTrust_initWithAccessGroup)(id self, SEL _cmd, id accessGroup);
+extern id hook_IGCloudTrust_initWithAccessGroup(id self, SEL _cmd, id accessGroup);
+
 @implementation UIGestureRecognizer (Block)
 - (void)setActionBlock:(GestureActionBlock)block {
     objc_setAssociatedObject(self, @selector(actionBlock), block, OBJC_ASSOCIATION_COPY_NONATOMIC);
