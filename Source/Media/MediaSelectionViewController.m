@@ -170,6 +170,7 @@ static void showCompletionToast(CustomToastView *progressToast, BOOL success, NS
     self.collectionView.delegate = self;
     self.collectionView.dataSource = self;
     self.collectionView.prefetchDataSource = self;
+    self.collectionView.prefetchingEnabled = YES;
     self.collectionView.showsHorizontalScrollIndicator = NO;
     [self.collectionView registerClass:[UICollectionViewCell class] forCellWithReuseIdentifier:@"MediaCell"];
     [self.view addSubview:self.collectionView];
@@ -363,10 +364,21 @@ static void showCompletionToast(CustomToastView *progressToast, BOOL success, NS
     return [UIColor colorWithRed:averageRed green:averageGreen blue:averageBlue alpha:1.0];
 }
 
+static BOOL ThetaPreviewImageIsPlaceholder(UIImage *image) {
+    if (!image) return YES;
+    if (@available(iOS 13.0, *)) {
+        if (image.isSymbolImage) return YES;
+    }
+    // Tiny SF-symbol-sized bitmaps sometimes get rasterized; treat very small images as placeholders.
+    if (image.size.width <= 44.0 && image.size.height <= 44.0) return YES;
+    return NO;
+}
+
 // Async preview generation using NSURLSession
 - (void)generatePreviewForMediaItem:(NSDictionary *)mediaItem completion:(void (^)(UIImage *preview))completion {
+    if (!completion) return;
     NSString *urlString = mediaItem[@"url"];
-    if (!urlString) {
+    if (!urlString.length) {
         completion(nil);
         return;
     }
@@ -377,37 +389,57 @@ static void showCompletionToast(CustomToastView *progressToast, BOOL success, NS
         return;
     }
 
-    if ([url.pathExtension.lowercaseString isEqualToString:@"mp4"]) {
+    NSString *ext = url.pathExtension.lowercaseString;
+    // Strip query-less path ext; CDN URLs often embed ".mp4" before query.
+    NSString *path = url.path.lowercaseString ?: @"";
+    BOOL looksVideo = [ext isEqualToString:@"mp4"] || [ext isEqualToString:@"mov"] || [path containsString:@".mp4"] || [mediaItem[@"isVideo"] boolValue];
+    if (looksVideo) {
         completion(nil);
-    } else {
-        NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-            if (!data || error) {
-                completion(nil);
-                return;
-            }
-            UIImage *image = [UIImage imageWithData:data];
-            completion(image);
-        }];
-        [task resume];
+        return;
     }
+
+    NSURLSessionConfiguration *config = [NSURLSessionConfiguration defaultSessionConfiguration];
+    config.timeoutIntervalForRequest = 12.0;
+    config.HTTPAdditionalHeaders = @{
+        @"User-Agent": @"Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        @"Accept": @"image/*,*/*;q=0.8",
+        @"Referer": @"https://www.instagram.com/"
+    };
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:config];
+    NSURLSessionDataTask *task = [session dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (!data || error) {
+            completion(nil);
+            return;
+        }
+        UIImage *image = [UIImage imageWithData:data];
+        completion(ThetaPreviewImageIsPlaceholder(image) ? nil : image);
+    }];
+    [task resume];
 }
 
 // Prefetching previews using NSOperationQueue and NSURLSession
 - (void)startLoadingMediaItemAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.item < 0 || indexPath.item >= (NSInteger)self.mediaItems.count) return;
     NSDictionary *mediaItem = self.mediaItems[indexPath.item];
     NSString *urlString = mediaItem[@"url"];
-    if (![self.previewCache objectForKey:urlString]) {
-        [self.fetchQueue addOperationWithBlock:^{
-            [self generatePreviewForMediaItem:mediaItem completion:^(UIImage *preview) {
-                if (preview) {
-                    [self.previewCache setObject:preview forKey:urlString];
-                    [[NSOperationQueue mainQueue] addOperationWithBlock:^{
-                        [self.collectionView reloadItemsAtIndexPaths:@[indexPath]];
-                    }];
+    if (!urlString.length) return;
+
+    UIImage *existing = [self.previewCache objectForKey:urlString];
+    if ([existing isKindOfClass:[UIImage class]] && !ThetaPreviewImageIsPlaceholder(existing)) {
+        return;
+    }
+
+    [self.fetchQueue addOperationWithBlock:^{
+        [self generatePreviewForMediaItem:mediaItem completion:^(UIImage *preview) {
+            if (!preview) return;
+            [self.previewCache setObject:preview forKey:urlString];
+            [[NSOperationQueue mainQueue] addOperationWithBlock:^{
+                if (indexPath.item < (NSInteger)self.mediaItems.count) {
+                    [self.collectionView reloadItemsAtIndexPaths:@[indexPath]];
                 }
             }];
         }];
-    }
+    }];
 }
 
 - (void)cancelLoadingMediaItemAtIndexPath:(NSIndexPath *)indexPath {
@@ -452,6 +484,10 @@ static void * const playerKey = &playerKey;
     AVPlayer *player = objc_getAssociatedObject(cell, playerKey);
     if (player) {
         [player play];
+    }
+    // Prefetch alone is unreliable for the first visible page — always kick preview loads here.
+    if (indexPath.item < (NSInteger)self.mediaItems.count) {
+        [self startLoadingMediaItemAtIndexPath:indexPath];
     }
 }
 
@@ -667,19 +703,35 @@ static void * const playerKey = &playerKey;
     imageView.contentMode = UIViewContentModeScaleAspectFill;
     imageView.clipsToBounds = YES;
     imageView.layer.cornerRadius = 20;
+    imageView.backgroundColor = [UIColor colorWithWhite:0.15 alpha:1.0];
     [cardView addSubview:imageView];
     
-    // Load cached image or placeholder
-    UIImage *cachedImage = [self.previewCache objectForKey:urlString];
-    if (cachedImage) {
+    // Prefer a real cached bitmap. Never permanently cache SF Symbol placeholders —
+    // that blocked async preview downloads and left the carousel looking empty.
+    UIImage *cachedImage = urlString.length ? [self.previewCache objectForKey:urlString] : nil;
+    UIImage *dictPreview = mediaItem[@"preview"];
+    if ([cachedImage isKindOfClass:[UIImage class]] && !ThetaPreviewImageIsPlaceholder(cachedImage)) {
         imageView.image = cachedImage;
+    } else if ([dictPreview isKindOfClass:[UIImage class]] && !ThetaPreviewImageIsPlaceholder(dictPreview)) {
+        imageView.image = dictPreview;
+        if (urlString.length) [self.previewCache setObject:dictPreview forKey:urlString];
     } else {
-        imageView.image = mediaItem[@"preview"];
-        [self.previewCache setObject:mediaItem[@"preview"] forKey:urlString];
+        imageView.image = ThetaPreviewImageIsPlaceholder(dictPreview) ? dictPreview : [UIImage systemImageNamed:@"photo"];
+        imageView.tintColor = [UIColor colorWithWhite:1 alpha:0.35];
+        imageView.contentMode = UIViewContentModeCenter;
+        if (urlString.length) {
+            [self startLoadingMediaItemAtIndexPath:[NSIndexPath indexPathForItem:mediaIndex inSection:0]];
+        }
     }
     
     // Set up video player if it's a video
-    if ([url.pathExtension.lowercaseString isEqualToString:@"mp4"]) {
+    NSString *path = url.path.lowercaseString ?: @"";
+    BOOL looksVideo = [url.pathExtension.lowercaseString isEqualToString:@"mp4"]
+        || [url.pathExtension.lowercaseString isEqualToString:@"mov"]
+        || [path containsString:@".mp4"]
+        || [mediaItem[@"isVideo"] boolValue];
+    if (looksVideo && url) {
+        imageView.contentMode = UIViewContentModeScaleAspectFill;
         AVPlayer *player = self.videoPlayersCache[urlString];
         if (!player) {
             player = [[AVPlayer alloc] initWithURL:url];

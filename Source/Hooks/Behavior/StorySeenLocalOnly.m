@@ -64,13 +64,9 @@ static BOOL theta_ivarNameHintsStoryReceiptNetwork(NSString *iname) {
 
 static BOOL theta_holderAcceptsNetworkishStrip(__unsafe_unretained id holder) {
     if (!holder) return NO;
-    if (theta_classHintsSeenNetworkingHost(holder)) return YES;
-    Class fc = objc_getClass("IGStoryFullscreenSectionController");
-    Class vc = objc_getClass("IGStoryViewerViewController");
-    Class h = object_getClass(holder);
-    if (fc && (h == fc || [h isSubclassOfClass:fc])) return YES;
-    if (vc && (h == vc || [h isSubclassOfClass:vc])) return YES;
-    return NO;
+    // Only strip known seen-upload hosts. Never touch the story viewer / section
+    // controller — nil'ing their "state"/"upload" ivars crashes didMarkItemAsSeen.
+    return theta_classHintsSeenNetworkingHost(holder);
 }
 
 static __unsafe_unretained id thetaHarvestSection = nil;

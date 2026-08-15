@@ -40,31 +40,63 @@ static volatile BOOL sGlobalDownloadInProgress = NO;
 + (void)showCustomAlertWithActions:(NSString *)title description:(NSString *)description actions:(NSArray<NSDictionary *> *)actions {
     dispatch_async(dispatch_get_main_queue(), ^{
         @try {
+            Class actionCls = NSClassFromString(@"IGCustomAlertAction");
+            Class alertCls = NSClassFromString(@"IGDSAlertDialogView");
+            if (!actionCls || !alertCls) {
+                // Fallback so story mentions / long-press menus still work if IG DS alert classes move.
+                UIAlertController *ac = [UIAlertController alertControllerWithTitle:title message:description preferredStyle:UIAlertControllerStyleAlert];
+                for (NSDictionary *actionDict in actions) {
+                    NSString *titleText = actionDict[@"title"] ?: @"OK";
+                    UIAlertActionStyle style = UIAlertActionStyleDefault;
+                    if ([titleText isEqualToString:@"Cancel"] || [titleText isEqualToString:@"No, cancel."] ||
+                        [titleText isEqualToString:@"No, I'm good."] || [titleText isEqualToString:@"No"]) {
+                        style = UIAlertActionStyleCancel;
+                    }
+                    void (^handler)(id) = actionDict[@"handler"];
+                    [ac addAction:[UIAlertAction actionWithTitle:titleText style:style handler:^(UIAlertAction *a) {
+                        if (handler) {
+                            @try { handler(a); } @catch (__unused NSException *e) {}
+                        }
+                    }]];
+                }
+                UIViewController *top = [self topViewController];
+                if (top) [top presentViewController:ac animated:YES completion:nil];
+                return;
+            }
+
             NSMutableArray *buttons = [NSMutableArray array];
             for (NSDictionary *actionDict in actions) {
-                IGCustomAlertAction *action = [[NSClassFromString(@"IGCustomAlertAction") alloc] init];
-                [action setValue:actionDict[@"handler"] forKey:@"handler"];
-                [action setValue:actionDict[@"title"] forKey:@"title"];
+                id action = [[actionCls alloc] init];
+                @try { [action setValue:actionDict[@"handler"] forKey:@"handler"]; } @catch (__unused NSException *e) {}
+                @try { [action setValue:actionDict[@"title"] forKey:@"title"]; } @catch (__unused NSException *e) {}
                 
                 NSString *titleText = actionDict[@"title"];
                 if ([titleText isEqualToString:@"No, cancel."] || 
                     [titleText isEqualToString:@"Cancel"] || 
                     [titleText isEqualToString:@"No, I'm good."] || 
                     [titleText isEqualToString:@"No"]) {
-                    [action setValue:@4 forKey:@"style"];
+                    @try { [action setValue:@4 forKey:@"style"]; } @catch (__unused NSException *e) {}
                 }
-                [buttons addObject:action];
+                if (action) [buttons addObject:action];
             }
             
-            IGDSAlertDialogView *alert = [[NSClassFromString(@"IGDSAlertDialogView") alloc] initWithStyle:@1 titleText:title descriptionText:description actions:buttons showHorizontalButtons:NO];
-            NSArray *buttonsArray = [alert valueForKey:@"buttons"];
-            [alert show];
+            id alert = [[alertCls alloc] initWithStyle:@1 titleText:title descriptionText:description actions:buttons showHorizontalButtons:NO];
+            NSArray *buttonsArray = nil;
+            @try { buttonsArray = [alert valueForKey:@"buttons"]; } @catch (__unused NSException *e) {}
+            if ([alert respondsToSelector:@selector(show)]) {
+                [alert show];
+            }
             
-            for (IGDSAlertDialogActionButton *button in buttonsArray) {
-                if ([button.titleLabel.text isEqualToString:@"Let's Go!"]) {
-                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 0.2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-                        button.titleLabel.textColor = [self iotaPinkColor];
-                    });
+            if ([buttonsArray isKindOfClass:[NSArray class]]) {
+                for (id button in buttonsArray) {
+                    UILabel *label = nil;
+                    @try { label = [button valueForKey:@"titleLabel"]; } @catch (__unused NSException *e) {}
+                    if (![label isKindOfClass:[UILabel class]]) continue;
+                    if ([label.text isEqualToString:@"Let's Go!"]) {
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 0.2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+                            label.textColor = [self iotaPinkColor];
+                        });
+                    }
                 }
             }
         } @catch (NSException *exception) {

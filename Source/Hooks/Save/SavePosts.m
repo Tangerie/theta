@@ -37,8 +37,8 @@ static void showCompletionToast(CustomToastView *progressToast, BOOL success, NS
 }
 
 static void downloadHDVideo(IGVideo *inputVideo) {
-    NSData *videoData = [inputVideo valueForKey:@"dashManifestData"];
-    if (!videoData) {
+    NSData *videoData = ThetaValueForKey(inputVideo, @"dashManifestData");
+    if (![videoData isKindOfClass:[NSData class]] || videoData.length == 0) {
         return;
     }
     

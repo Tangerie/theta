@@ -161,42 +161,58 @@ static BOOL theta_isNavBarRecipientInAutoMarkList(UIView *navBarView) {
 /// Returns YES if any participant in the given thread VC is in the Mark As Seen auto-mark list. Uses theta_otherParticipantUsernames first; if that returns empty (e.g. business account), uses nav-bar title resolution so the button state matches add/remove.
 static BOOL isThreadVCInAutoMarkList(id threadVC) {
 	if (!threadVC) return NO;
-	NSArray<NSString *> *usernames = theta_otherParticipantUsernames(threadVC);
-	if (usernames.count == 0) {
-		UIView *root = nil;
-		@try {
-			id nav = [threadVC valueForKey:@"navigationController"];
-			if (nav) root = [nav valueForKey:@"view"];
-			if (!root) root = [threadVC valueForKey:@"view"];
-		} @catch (__unused NSException *e) { root = nil; }
-		if (root) {
-			NSString *one = theta_recipientUsernameFromNavBarRootView(root);
-			if (one.length) usernames = @[ one ];
+	@try {
+		NSArray<NSString *> *usernames = theta_otherParticipantUsernames(threadVC);
+		if (usernames.count == 0) {
+			UIView *root = nil;
+			@try {
+				id nav = ThetaValueForKey(threadVC, @"navigationController");
+				if (nav) root = ThetaValueForKey(nav, @"view");
+				if (!root) root = ThetaValueForKey(threadVC, @"view");
+			} @catch (__unused NSException *e) { root = nil; }
+			if (root) {
+				NSString *one = theta_recipientUsernameFromNavBarRootView(root);
+				if (one.length) usernames = @[ one ];
+			}
 		}
+		if (!usernames.count) return NO;
+		NSArray *list = [[NSUserDefaults standardUserDefaults] objectForKey:@"Theta_MarkAsSeen_AutoMarkUserIds"];
+		if (![list isKindOfClass:[NSArray class]]) return NO;
+		NSMutableSet *listSet = [NSMutableSet set];
+		for (id obj in list) {
+			if ([obj isKindOfClass:[NSString class]])
+				[listSet addObject:[(NSString *)obj lowercaseString]];
+		}
+		if (listSet.count == 0) return NO;
+		for (NSString *u in usernames) {
+			if ([listSet containsObject:u]) return YES;
+		}
+		return NO;
+	} @catch (__unused NSException *e) {
+		return NO;
 	}
-	if (!usernames.count) return NO;
-	NSArray *list = [[NSUserDefaults standardUserDefaults] objectForKey:@"Theta_MarkAsSeen_AutoMarkUserIds"];
-	if (![list isKindOfClass:[NSArray class]]) return NO;
-	NSMutableSet *listSet = [NSMutableSet set];
-	for (id obj in list) {
-		if ([obj isKindOfClass:[NSString class]])
-			[listSet addObject:[(NSString *)obj lowercaseString]];
-	}
-	if (listSet.count == 0) return NO;
-	for (NSString *u in usernames) {
-		if ([listSet containsObject:u]) return YES;
-	}
-	return NO;
 }
 
 /// Returns YES if any participant in the current thread (from data source self) is in the Mark As Seen auto-mark list. Resolves thread VC from data source and reuses isThreadVCInAutoMarkList.
 static BOOL isThreadParticipantInAutoMarkList(id dataSource) {
 	if (!dataSource) return NO;
-	id delegate = [dataSource valueForKey:@"delegate"];
-	if (!delegate) return NO;
-	id threadVC = [delegate valueForKey:@"delegate"];
-	if (!threadVC) return NO;
-	return isThreadVCInAutoMarkList(threadVC);
+	@try {
+		id delegate = ThetaValueForKey(dataSource, @"delegate");
+		if (!delegate) delegate = ThetaValueForKey(dataSource, @"_delegate");
+		if (!delegate) return NO;
+		id threadVC = ThetaValueForKey(delegate, @"delegate");
+		if (!threadVC) threadVC = ThetaValueForKey(delegate, @"_delegate");
+		if (!threadVC) threadVC = ThetaValueForKey(delegate, @"threadViewController");
+		if (!threadVC) return NO;
+		return isThreadVCInAutoMarkList(threadVC);
+	} @catch (__unused NSException *e) {
+		return NO;
+	}
+}
+
+static BOOL theta_autoMarkListIsEmpty(void) {
+	NSArray *list = [[NSUserDefaults standardUserDefaults] objectForKey:@"Theta_MarkAsSeen_AutoMarkUserIds"];
+	return ![list isKindOfClass:[NSArray class]] || list.count == 0;
 }
 
 static BOOL (*orig_markMessagesAsSeen)(id self, SEL _cmd);
@@ -205,22 +221,34 @@ static BOOL hook_markMessagesAsSeen(id self, SEL _cmd) {
 	BOOL seenOnTyping = ENABLED(@"Seen On Typing");
 	BOOL seenOnReact = ENABLED(@"Seen On React");
 	BOOL seenOnSend = ENABLED(@"Seen On Send");
-	
+	BOOL anyFeature = markAsSeen || seenOnTyping || seenOnReact || seenOnSend;
+
+	// Fast path: nothing to intercept — avoid KVC that can throw on IG 441 data sources.
+	if (!anyFeature && theta_autoMarkListIsEmpty()) {
+		return orig_markMessagesAsSeen(self, _cmd);
+	}
+
 	// If any thread participant is in the auto-mark list, use normal (auto) mark-as-seen behavior.
-	if (isThreadParticipantInAutoMarkList(self)) {
+	BOOL inAutoList = NO;
+	@try {
+		inAutoList = isThreadParticipantInAutoMarkList(self);
+	} @catch (__unused NSException *e) {
+		inAutoList = NO;
+	}
+	if (inAutoList) {
 		return orig_markMessagesAsSeen(self, _cmd);
 	}
-	
+
 	// If all settings are off, return original implementation
-	if (!markAsSeen && !seenOnTyping && !seenOnReact && !seenOnSend) {
+	if (!anyFeature) {
 		return orig_markMessagesAsSeen(self, _cmd);
 	}
-	
+
 	// If all settings are on, return NO
 	if (markAsSeen && seenOnTyping && seenOnReact && seenOnSend) {
 		return NO;
 	}
-	
+
 	// If exactly one setting is on and the other two are off, return NO
 	if ((markAsSeen && !seenOnTyping && !seenOnReact) ||
 		(!markAsSeen && seenOnTyping && !seenOnReact && !seenOnSend) ||
@@ -228,7 +256,7 @@ static BOOL hook_markMessagesAsSeen(id self, SEL _cmd) {
 		(!markAsSeen && !seenOnTyping && !seenOnReact && seenOnSend)) {
 		return NO;
 	}
-	
+
 	// For any other combination (2 on, 1 off), return NO
 	return NO;
 }
@@ -883,8 +911,8 @@ static void hook_rightBarButtonItems(id self, SEL _cmd, id arg1) {
 		Class badgeCls = NSClassFromString(@"IGBadgeButton");
 		for (NSInteger i = (NSInteger)[new_items count] - 1; i >= 0; i--) {
 			id item = [new_items objectAtIndex:(NSUInteger)i];
-			id view = [item valueForKey:@"_view"];
-			if (!view) view = [item valueForKey:@"customView"];
+			id view = ThetaValueForKey(item, @"_view");
+			if (!view) view = ThetaValueForKey(item, @"customView");
 			if (!view) continue;
 			if (hideBlend && badgeCls && [view isKindOfClass:badgeCls]) {
 				[new_items removeObjectAtIndex:(NSUInteger)i];
@@ -1083,12 +1111,17 @@ static void hook_messageReactionSelection4(id self, SEL _cmd, id arg1, id arg2, 
 
 static void (*orig_threadViewDidAppear)(id self, SEL _cmd, BOOL animated);
 static void hook_threadViewDidAppear(id self, SEL _cmd, BOOL animated) {
-	orig_threadViewDidAppear(self, _cmd, animated);
-	// Slight delay so data source/thread and last-sender info are ready.
-	if (!isThreadVCInAutoMarkList(self)) return;
-	if (!theta_hasUnreadFromRecipient(self)) return;
-	theta_performMarkLastMessageAsSeen(self, nil);
-	theta_showMarkedAsSeenToastDeferred();
+	if (orig_threadViewDidAppear) orig_threadViewDidAppear(self, _cmd, animated);
+	@try {
+		// Auto-mark on open only applies when the list has entries.
+		if (theta_autoMarkListIsEmpty()) return;
+		if (!isThreadVCInAutoMarkList(self)) return;
+		if (!theta_hasUnreadFromRecipient(self)) return;
+		theta_performMarkLastMessageAsSeen(self, nil);
+		theta_showMarkedAsSeenToastDeferred();
+	} @catch (NSException *exception) {
+		NSLog(@"[Theta] MarkAsSeen viewDidAppear: %@", exception);
+	}
 }
 
 void THRegisterMarkAsSeenThreadAndReactionHooks(void) {
