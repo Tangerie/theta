@@ -60,7 +60,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.THEOS }}
-          key: theos-${{ runner.os }}-${{ hashFiles('sdks/iPhoneOS14.5.sdk.tar.xz') }}-v1
+          key: theos-${{ runner.os }}-${{ hashFiles('sdks/iPhoneOS14.5.sdk.tar.xz') }}-v2
 
       - name: Install Theos
         run: |
@@ -78,6 +78,29 @@ jobs:
             tar -xJf sdks/iPhoneOS14.5.sdk.tar.xz -C "$THEOS/sdks"
           fi
           test -d "$THEOS/sdks/iPhoneOS14.5.sdk" || { echo "::error::SDK not unpacked"; exit 1; }
+
+      - name: Provide libc++ headers to the 14.5 SDK
+        # TweakCOMPILE.xm is compiled as Objective-C++ (Logos emits .mm), so the SDK's
+        # simd/math.h takes its C++ branch and `#include <cmath>`. The patched 14.5 SDK
+        # ships no libc++ headers, so borrow them from the selected Xcode.
+        run: |
+          set -euo pipefail
+          SDK="$THEOS/sdks/iPhoneOS14.5.sdk"
+          if [ ! -d "$SDK/usr/include/c++/v1" ]; then
+            for src in \
+              "$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/include/c++" \
+              "$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null || true)/usr/include/c++" \
+              "$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)/usr/include/c++"; do
+              if [ -d "$src/v1" ]; then
+                echo "Copying libc++ headers from $src"
+                mkdir -p "$SDK/usr/include/c++"
+                cp -R "$src/v1" "$SDK/usr/include/c++/v1"
+                break
+              fi
+            done
+          fi
+          test -f "$SDK/usr/include/c++/v1/cmath" \
+            || { echo "::error::no libc++ headers available for $SDK"; exit 1; }
 
       - name: Point Xcode14.xctoolchain at the selected Xcode
         # The Makefile hard-codes PREFIX = $THEOS/toolchain/Xcode14.xctoolchain/usr/bin/.
