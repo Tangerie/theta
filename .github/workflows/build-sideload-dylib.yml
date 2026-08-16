@@ -136,13 +136,31 @@ jobs:
         # install name, repoint the weak CydiaSubstrate dependency, ad-hoc sign.
         run: |
           set -euo pipefail
-          DYLIB="$(find .theos -name 'Theta.dylib' -type f -print -quit)"
+          # Check the canonical locations build.sh uses first. A bare `find` would also
+          # match .theos/obj/arm64/Theta.dylib.dSYM/.../DWARF/Theta.dylib, which is a
+          # debug-symbol companion, not a loadable image.
+          DYLIB=""
+          for cand in \
+            .theos/obj/Theta.dylib \
+            .theos/obj/arm64/Theta.dylib \
+            .theos/_/Library/MobileSubstrate/DynamicLibraries/Theta.dylib \
+            .theos/_/usr/lib/TweakInject/Theta.dylib; do
+            if [ -f "$cand" ]; then DYLIB="$cand"; break; fi
+          done
+          if [ -z "$DYLIB" ]; then
+            DYLIB="$(find .theos -name '*.dSYM' -prune -o -name 'Theta.dylib' -type f -print | head -1)"
+          fi
           if [ -z "$DYLIB" ]; then
             echo "::error::Theta.dylib not found under .theos"
-            find .theos -maxdepth 4 -type f -name '*.dylib' || true
+            find .theos -type f -name '*.dylib' || true
             exit 1
           fi
           echo "Found $DYLIB"
+          if ! file "$DYLIB" | grep -q 'dynamically linked shared library'; then
+            echo "::error::$DYLIB is not a loadable dylib"
+            file "$DYLIB"
+            exit 1
+          fi
 
           mkdir -p artifact
           cp "$DYLIB" artifact/Theta.dylib

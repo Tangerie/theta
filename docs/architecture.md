@@ -116,8 +116,14 @@ The corresponding constraints:
   via Makefile wildcards. They must `#import` their own headers from `Include/`, they cannot see
   the hook helpers, and several of them redefine `ENABLED` locally
   (e.g. `Source/UI/SettingsViewController.m:13`, `Source/UI/MessagesManager.m:5`).
-- The output extension is `.xm`, so Logos preprocessing runs. The only directive used is
-  `%c(Class)` (22 occurrences); there are no `%hook`/`%orig`/`%new` blocks anywhere.
+- The output extension is `.xm`, so Logos preprocessing runs and the TU is compiled as
+  Objective-**C++** (Logos emits `.mm`). That is why the amalgamated TU — and only it — needs
+  libc++ headers available to the 14.5 SDK; the other TUs are plain Objective-C. It also means
+  `%c(Class)` works: 22 occurrences, and there are no `%hook`/`%orig`/`%new` blocks anywhere.
+- Categories declared in more than one hook file land in the same TU twice, so the build emits
+  `-Wobjc-duplicate-category-definition` warnings (currently `UIButton (BlockTarget)` and
+  `UIGestureRecognizer (BlockTarget)`). Benign, but it means a category is effectively global to
+  the whole hook tree.
 
 ## 4. Load and initialization order
 
