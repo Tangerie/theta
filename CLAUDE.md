@@ -11,6 +11,8 @@ Theta is an Instagram tweak (Objective-C, Theos) that runs inside `com.burbn.ins
 
 Targets Instagram **441.0.0**; hooks resolve IG classes/selectors by name at runtime, so version drift shows up as "hook install misses" rather than build failures.
 
+In-depth documentation lives in `docs/` — [architecture](docs/architecture.md) (build, TU amalgamation, lifecycle), [hooking](docs/hooking.md) (helpers, pitfalls, adding a feature), [features](docs/features.md) (what each hook attaches to), [settings-reference](docs/settings-reference.md), [media-pipeline](docs/media-pipeline.md), [profile-analyzer](docs/profile-analyzer.md), [ui-layer](docs/ui-layer.md), [sideload](docs/sideload.md).
+
 ## Build
 
 Builds require macOS + Xcode CLI tools + Theos (`build.sh` uses `codesign`, `PlistBuddy`, `install_name_tool`, `xattr`). **They cannot run in a Linux container** — expect to make changes by reading code, not by compiling.
@@ -60,7 +62,7 @@ Preferences are plain `NSUserDefaults` keyed off the **setting title string**, w
 | --- | --- | --- |
 | (default switch) | `<Title>_Enabled` | `ENABLED(@"<Title>")` |
 | `segment` (+ `options`) | `<Title>_SegmentIndex` | `integerForKey:` |
-| `color` | `<Title>_Color` (hex string) | `THColorFromHexString` |
+| `color` | `<Title>_Color` (`NSKeyedArchiver`-archived `UIColor`) | `[NSKeyedUnarchiver unarchivedObjectOfClass:[UIColor class] fromData:… error:nil]` |
 | `view` (+ `viewController`) | n/a — pushes a VC | — |
 
 ### Hooking rules
