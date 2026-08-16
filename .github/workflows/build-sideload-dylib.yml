@@ -1,0 +1,167 @@
+name: Build sideload dylib
+
+# Builds Theta.dylib with SIDELOAD=1 and uploads it as an artifact.
+#
+# This deliberately stops short of ./build.sh sideload: injecting into
+# input/Payload/Instagram.app needs a *decrypted* Instagram binary, which cannot
+# live in the repo. Everything else the build needs (patched iOS 14.5 SDK,
+# ffmpeg.framework headers, CydiaSubstrate.framework) is already vendored here.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+  push:
+    branches:
+      - main
+      - 'claude/**'
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dylib:
+    runs-on: macos-14
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set THEOS
+        run: echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
+
+      - name: Select Xcode
+        # The build pins SDKVERSION = 14.5 and uses the patched SDK from sdks/.
+        # Newer clang releases are historically the thing that breaks first, so
+        # prefer a 15.x toolchain and fall back to whatever the image selected.
+        run: |
+          set -euo pipefail
+          for v in Xcode_15.4 Xcode_15.3 Xcode_15.2 Xcode_15.1 Xcode_15.0.1; do
+            if [ -d "/Applications/$v.app" ]; then
+              sudo xcode-select -s "/Applications/$v.app"
+              break
+            fi
+          done
+          echo "Using $(xcode-select -p)"
+          xcodebuild -version || true
+
+      - name: Install build tools
+        # build.sh prefers gmake over macOS's make 3.81. Add `dpkg` here if you ever
+        # switch this job to `make package` (Theos's .deb stage wants dpkg-deb).
+        run: brew install make ldid
+
+      - name: Cache Theos
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.THEOS }}
+          key: theos-${{ runner.os }}-${{ hashFiles('sdks/iPhoneOS14.5.sdk.tar.xz') }}-v1
+
+      - name: Install Theos
+        run: |
+          set -euo pipefail
+          if [ ! -f "$THEOS/makefiles/common.mk" ]; then
+            rm -rf "$THEOS"
+            git clone --quiet --recursive https://github.com/theos/theos.git "$THEOS"
+          fi
+          mkdir -p "$THEOS/sdks" "$THEOS/toolchain" "$THEOS/vendor/lib"
+
+      - name: Unpack patched iPhoneOS 14.5 SDK
+        run: |
+          set -euo pipefail
+          if [ ! -d "$THEOS/sdks/iPhoneOS14.5.sdk" ]; then
+            tar -xJf sdks/iPhoneOS14.5.sdk.tar.xz -C "$THEOS/sdks"
+          fi
+          test -d "$THEOS/sdks/iPhoneOS14.5.sdk" || { echo "::error::SDK not unpacked"; exit 1; }
+
+      - name: Point Xcode14.xctoolchain at the selected Xcode
+        # The Makefile hard-codes PREFIX = $THEOS/toolchain/Xcode14.xctoolchain/usr/bin/.
+        # Re-linked every run so a cached Theos can't pin a stale Xcode path.
+        run: |
+          set -euo pipefail
+          ln -sfn "$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain" \
+                  "$THEOS/toolchain/Xcode14.xctoolchain"
+          test -x "$THEOS/toolchain/Xcode14.xctoolchain/usr/bin/clang" \
+            || { echo "::error::toolchain symlink is wrong"; exit 1; }
+
+      - name: Ensure vendored CydiaSubstrate.framework
+        # SIDELOAD builds use -I$THEOS/vendor/lib/CydiaSubstrate.framework/Headers and
+        # -F$THEOS/vendor/lib -weak_framework CydiaSubstrate. If the Theos clone doesn't
+        # provide it, use the copy already in third_party/.
+        run: |
+          set -euo pipefail
+          if [ ! -d "$THEOS/vendor/lib/CydiaSubstrate.framework/Headers" ]; then
+            echo "Theos has no vendored CydiaSubstrate.framework — using third_party/"
+            rm -rf "$THEOS/vendor/lib/CydiaSubstrate.framework"
+            cp -R third_party/CydiaSubstrate.framework "$THEOS/vendor/lib/"
+          fi
+          ls -la "$THEOS/vendor/lib/CydiaSubstrate.framework"
+
+      - name: Build (SIDELOAD=1)
+        # `before-all::` regenerates TweakCOMPILE.xm via scripts/assemble.py;
+        # `after-all::` deletes it again.
+        run: gmake SIDELOAD=1
+
+      - name: Stage the dylib
+        id: stage
+        # Mirrors what build.sh does when it copies the dylib into the .app: set the
+        # install name, repoint the weak CydiaSubstrate dependency, ad-hoc sign.
+        run: |
+          set -euo pipefail
+          DYLIB="$(find .theos -name 'Theta.dylib' -type f -print -quit)"
+          if [ -z "$DYLIB" ]; then
+            echo "::error::Theta.dylib not found under .theos"
+            find .theos -maxdepth 4 -type f -name '*.dylib' || true
+            exit 1
+          fi
+          echo "Found $DYLIB"
+
+          mkdir -p artifact
+          cp "$DYLIB" artifact/Theta.dylib
+
+          install_name_tool -id "@executable_path/Theta.dylib" artifact/Theta.dylib
+          install_name_tool -change \
+            "/Library/Frameworks/CydiaSubstrate.framework/CydiaSubstrate" \
+            "@executable_path/CydiaSubstrate.framework/CydiaSubstrate" \
+            artifact/Theta.dylib 2>/dev/null || true
+          install_name_tool -change \
+            "@rpath/CydiaSubstrate.framework/CydiaSubstrate" \
+            "@executable_path/CydiaSubstrate.framework/CydiaSubstrate" \
+            artifact/Theta.dylib 2>/dev/null || true
+
+          codesign --remove-signature artifact/Theta.dylib 2>/dev/null || true
+          codesign -f -s - artifact/Theta.dylib
+
+          VERSION="$(awk -F': ' '/^Version:/ {print $2}' control | tr -d '[:space:]')"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Report
+        run: |
+          {
+            echo "### Theta.dylib (SIDELOAD=1)"
+            echo
+            echo "- Version: \`${{ steps.stage.outputs.version }}\`"
+            echo "- Xcode: \`$(xcode-select -p)\`"
+            echo "- Size: \`$(du -h artifact/Theta.dylib | cut -f1)\`"
+            echo
+            echo '```'
+            file artifact/Theta.dylib
+            echo
+            otool -L artifact/Theta.dylib
+            echo '```'
+            echo
+            echo "Not an installable IPA — injecting into a decrypted Instagram binary"
+            echo "still needs \`./build.sh sideload\` with \`input/Payload/Instagram.app\` present."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Theta-dylib-sideload-${{ steps.stage.outputs.version }}-${{ github.sha }}
+          path: artifact/Theta.dylib
+          if-no-files-found: error
+          retention-days: 14

@@ -51,7 +51,22 @@ rewrites the dylib's install name and its Substrate dependency to `@executable_p
 `ThetaResources.bundle` and (if present) `layout/Library/Application Support/ffmpeg.framework`
 into the `.app`, cleans `.DS_Store`/xattrs, and zips `Payload` into the IPA.
 
-There are **no tests, linters, or CI** in the repository. `Theta_CFLAGS` also suppresses
+### CI
+
+`.github/workflows/build-sideload-dylib.yml` compiles the sideload dylib on `macos-14`
+(`workflow_dispatch`, PRs, and pushes to `main`/`claude/**`, skipping markdown-only changes). It
+installs Theos, unpacks the vendored `sdks/iPhoneOS14.5.sdk.tar.xz`, symlinks
+`$THEOS/toolchain/Xcode14.xctoolchain` at the selected Xcode (the Makefile hard-codes that
+`PREFIX`), fills in `$THEOS/vendor/lib/CydiaSubstrate.framework` from `third_party/` if the Theos
+clone lacks it, runs `gmake SIDELOAD=1`, then applies the same `install_name_tool` rewrites and
+ad-hoc signature `build.sh` applies when staging the dylib into an `.app`.
+
+It is a **compile check**, not a release pipeline: it produces `Theta.dylib` as an artifact and
+stops before injection, since `./build.sh sideload` needs a decrypted
+`input/Payload/Instagram.app/Instagram` that cannot be committed. Nothing verifies runtime
+behavior — that is still manual, on device.
+
+There are **no tests or linters** in the repository. `Theta_CFLAGS` also suppresses
 `-Wincompatible-pointer-types`, `-Wnullability-completeness`, `-Wunused-*`, and
 `-Wdeprecated-declarations`, so the compiler catches noticeably less than usual — in particular
 mismatched hook function signatures will compile silently.

@@ -27,7 +27,9 @@ make install [ROOTLESS=1]              # needs THEOS_DEVICE_IP; reopens Instagra
 
 `SIDELOAD` and `ROOTLESS` are mutually exclusive (the Makefile errors out). Requires the patched `iPhoneOS14.5.sdk` from `sdks/` unpacked into `$THEOS/sdks` (see README) — a stock Xcode SDK will not work.
 
-There are no tests, linters, or CI. Verification is manual on-device.
+There are no tests or linters. Verification is manual on-device.
+
+CI (`.github/workflows/build-sideload-dylib.yml`) builds `Theta.dylib` with `SIDELOAD=1` on a `macos-14` runner and uploads it as an artifact — a compile check only. It stops before IPA injection, which needs a decrypted Instagram binary that can't be in the repo.
 
 ## Compilation model (read before adding files)
 
