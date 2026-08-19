@@ -1,3 +1,4 @@
+#import "Include/ThetaDashManifest.h"
 #import "Include/ThetaHelper.h"
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
@@ -422,7 +423,11 @@ static void hook_uploadAudioMessage3(id self, SEL _cmd, id viewController, id au
 
 		AVAssetExportSession *exporter = [[AVAssetExportSession alloc] initWithAsset:(composition ? composition : asset) presetName:AVAssetExportPresetPassthrough];
 		exporter.outputURL = mp4URL;
-		exporter.outputFileType = AVFileTypeMPEG4;
+		if (!ThetaExportSessionSetFileType(exporter, AVFileTypeMPEG4)) {
+			NSLog(@"[Theta] audio upload: exporter cannot write MPEG-4; aborting");
+			gThetaExportInProgress = NO;
+			return;
+		}
 		exporter.shouldOptimizeForNetworkUse = YES;
 
 		[exporter exportAsynchronouslyWithCompletionHandler:^{
@@ -449,7 +454,11 @@ static void hook_uploadAudioMessage3(id self, SEL _cmd, id viewController, id au
 				[[NSFileManager defaultManager] removeItemAtURL:m4aURL error:nil];
 				AVAssetExportSession *fallback = [[AVAssetExportSession alloc] initWithAsset:asset presetName:AVAssetExportPresetAppleM4A];
 				fallback.outputURL = m4aURL;
-				fallback.outputFileType = AVFileTypeAppleM4A;
+				if (!ThetaExportSessionSetFileType(fallback, AVFileTypeAppleM4A)) {
+					NSLog(@"[Theta] audio upload: fallback exporter cannot write M4A; aborting");
+					gThetaExportInProgress = NO;
+					return;
+				}
 				fallback.shouldOptimizeForNetworkUse = YES;
 				[fallback exportAsynchronouslyWithCompletionHandler:^{
 					if (fallback.status == AVAssetExportSessionStatusCompleted) {
@@ -545,7 +554,11 @@ static void hook_uploadAudioMessage3(id self, SEL _cmd, id viewController, id au
 	// Export any other audio (e.g., mp3) to m4a
 	AVAssetExportSession *exporter = [[AVAssetExportSession alloc] initWithAsset:asset presetName:AVAssetExportPresetAppleM4A];
 	exporter.outputURL = m4aURL;
-	exporter.outputFileType = AVFileTypeAppleM4A;
+	if (!ThetaExportSessionSetFileType(exporter, AVFileTypeAppleM4A)) {
+		NSLog(@"[Theta] Files audio: exporter cannot write M4A; using the original file");
+		finishWithURL(docURL);
+		return;
+	}
 	exporter.shouldOptimizeForNetworkUse = YES;
 	[exporter exportAsynchronouslyWithCompletionHandler:^{
 		if (exporter.status == AVAssetExportSessionStatusCompleted) {

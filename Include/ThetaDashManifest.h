@@ -39,3 +39,16 @@ FOUNDATION_EXPORT void ThetaPhotoLibraryImportVideoFromURL(NSURL *fileURL, void 
 
 /** Re-encode with AVFoundation so Photos will accept the file (AV1 on iOS 17+). */
 FOUNDATION_EXPORT BOOL ThetaExportPhotosCompatibleMP4(NSString *videoPath, NSString *audioPath, BOOL hasAudio, NSString *outputPath);
+
+@class AVAssetExportSession;
+
+/**
+ * Sets `outputFileType` only when the session reports it as supported, and never lets
+ * -setOutputFileType: raise out of the call.
+ *
+ * -[AVAssetExportSession setOutputFileType:] raises NSInvalidArgumentException when the type is
+ * not in `supportedFileTypes`, and that list is asset/preset dependent (and, on newer iOS, can
+ * come back empty because the synchronous accessor is deprecated). Callers must treat NO as
+ * "this preset can't produce that container" and move on.
+ */
+FOUNDATION_EXPORT BOOL ThetaExportSessionSetFileType(AVAssetExportSession *session, NSString *fileType);

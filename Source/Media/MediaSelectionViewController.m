@@ -1764,8 +1764,13 @@ static void * const playerKey = &playerKey;
                     }
                     
                     CMTime videoDur = videoAsset.duration;
+                    /* mergeDur is derived from videoDur, so falling back to videoDur cannot rescue a
+                       bad value — and insertTimeRange: raises on an invalid range instead of
+                       reporting through its error out-param. */
+                    BOOL durationUsable = CMTIME_IS_NUMERIC(videoDur) && CMTIME_COMPARE_INLINE(videoDur, >, kCMTimeZero);
                     CMTime mergeDur = videoDur;
-                    if (audioTrackForMerge && audioAssetForMerge && CMTIME_IS_NUMERIC(audioAssetForMerge.duration)) {
+                    if (durationUsable && audioTrackForMerge && audioAssetForMerge && CMTIME_IS_NUMERIC(audioAssetForMerge.duration)
+                        && CMTIME_COMPARE_INLINE(audioAssetForMerge.duration, >, kCMTimeZero)) {
                         mergeDur = CMTimeMinimum(videoDur, audioAssetForMerge.duration);
                     }
                     if (!CMTIME_IS_NUMERIC(mergeDur) || CMTIME_COMPARE_INLINE(mergeDur, <=, kCMTimeZero)) {
@@ -1775,7 +1780,12 @@ static void * const playerKey = &playerKey;
                     
                     NSError *videoInsertError = nil;
                     if (videoTrackForMerge) {
-                        [compositionVideoTrack insertTimeRange:mergeRange ofTrack:videoTrackForMerge atTime:kCMTimeZero error:&videoInsertError];
+                        if (!durationUsable) {
+                            videoInsertError = [NSError errorWithDomain:@"Theta" code:-10
+                                                              userInfo:@{NSLocalizedDescriptionKey: @"Unusable video duration"}];
+                        } else {
+                            [compositionVideoTrack insertTimeRange:mergeRange ofTrack:videoTrackForMerge atTime:kCMTimeZero error:&videoInsertError];
+                        }
                         if (videoInsertError) {
                             NSLog(@"Error adding video track for video %ld: %@", (long)videoIndex, videoInsertError);
                             dispatch_semaphore_signal(transcodeSemaphore);
@@ -1811,20 +1821,24 @@ static void * const playerKey = &playerKey;
                     
                     AVAssetExportSession *exportSession = [[AVAssetExportSession alloc] initWithAsset:composition presetName:AVAssetExportPresetHighestQuality];
                     exportSession.outputURL = [NSURL fileURLWithPath:outputPath];
-                    exportSession.outputFileType = AVFileTypeMPEG4;
+                    BOOL canWriteMP4 = ThetaExportSessionSetFileType(exportSession, AVFileTypeMPEG4);
                     if ([exportSession respondsToSelector:@selector(setShouldOptimizeForNetworkUse:)]) {
                         exportSession.shouldOptimizeForNetworkUse = YES;
                     }
                     
                     dispatch_semaphore_t exportSemaphore = dispatch_semaphore_create(0);
-                    [exportSession exportAsynchronouslyWithCompletionHandler:^{
-                        dispatch_semaphore_signal(exportSemaphore);
-                    }];
-                    dispatch_semaphore_wait(exportSemaphore, DISPATCH_TIME_FOREVER);
+                    if (canWriteMP4) {
+                        [exportSession exportAsynchronouslyWithCompletionHandler:^{
+                            dispatch_semaphore_signal(exportSemaphore);
+                        }];
+                        dispatch_semaphore_wait(exportSemaphore, DISPATCH_TIME_FOREVER);
+                    } else {
+                        NSLog(@"Bulk %ld: export session cannot write MPEG-4", (long)videoIndex);
+                    }
                     
                     dispatch_semaphore_signal(transcodeSemaphore);
                     
-                    if (exportSession.status != AVAssetExportSessionStatusCompleted) {
+                    if (!canWriteMP4 || exportSession.status != AVAssetExportSessionStatusCompleted) {
                         NSLog(@"Export failed for video %ld: %@", (long)videoIndex, exportSession.error);
                         
                         // Cleanup
