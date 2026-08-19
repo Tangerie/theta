@@ -148,7 +148,9 @@ Three features layer on the same IG story machinery; understanding the split mat
   returns a formatted string per the segment index (1 `MMM d`, 2 `MMM d, yyyy`, 3 12-hour,
   4 24-hour, 5 `yyyy-MM-dd`, 6 `yyyy-MM-dd HH:mm`), falling through to `orig` for index 0.
 - **Liquid Glass** (`General/LiquidGlass.m`): the most invasive feature. Three layers:
-  1. **C symbols** patched with Substrate (`ThetaMSHookFunction`) — `IGFloatingTabBarEnabled`,
+  1. **C symbols** patched with Substrate (`ThetaMSHookFunction`) — **jailbreak only, compiled out
+     under `SIDELOAD` because patching signed `__TEXT` gets the process killed at launch** —
+     `IGFloatingTabBarEnabled`,
      `IGTabBarDynamicSizingEnabled`, `IGTabBarEnhancedDynamicSizingEnabled`,
      `IGTabBarHomecomingWithFloatingTabEnabled`, `IGTabBarViewPointFixEnabled`,
      `IGTabBarStyleForLauncherSet` — installed from the constructor and retried up to 2 s.

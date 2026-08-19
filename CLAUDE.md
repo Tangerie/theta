@@ -88,7 +88,7 @@ Sideload requires extra shimming because the app is re-signed under a different 
 - Substrate is weak-linked; `build.sh` stages `CydiaSubstrate.framework` into the app and rewrites install names to `@executable_path/…`.
 - Under `ROOTLESS=1`, wrap absolute filesystem paths in `ROOT_PATH_NS()` (`Include/rootless.h`) to prefix `/var/jb`.
 
-Known broken on sideload only: the Navigation features (tab order, swipe between tabs, launch tab, hide tabs, Messenger mode).
+Known broken on sideload only: the Navigation features (tab order, swipe between tabs, launch tab, hide tabs, Messenger mode), and Liquid Glass's C-flag overrides — **inline-patching `__TEXT` with `MSHookFunction` is fatal in a re-signed app** (the dirtied page fails code-signing validation and the kernel kills the process with `CODESIGNING`/"Invalid Page"). `ThetaMSHookFunction` call sites must be `#ifdef SIDELOAD`-excluded; ObjC swizzles are unaffected.
 
 ## Subsystems
 

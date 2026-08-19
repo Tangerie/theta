@@ -109,8 +109,12 @@ The only current consumer is the Liquid Glass feature
 flag and retried on several run-loop turns, because the images may not be loaded when the
 constructor runs.
 
-Symbol **rebinding** (as opposed to inline patching) uses `fishhook.c` and is sideload-only; see
-[sideload.md](sideload.md).
+**Inline patching is jailbreak-only.** `ThetaMSHookFunction` writes into the target's `__TEXT`,
+which in a re-signed (sideloaded) app leaves the page `rw-` and failing code-signing validation —
+the kernel then kills the process the first time it executes there. The Liquid Glass installer is
+`#ifdef SIDELOAD`-excluded for exactly this reason; see [sideload.md](sideload.md) §9. Symbol
+**rebinding** (as opposed to inline patching) uses `fishhook.c`, only touches GOT entries in
+writable data, and is sideload-only.
 
 ## 3. Reading and writing IG state
 
@@ -170,7 +174,11 @@ Each of these is documented in-tree next to the code that enforces it.
    `0x54485345`/`0x54484C53` for the DM bar-button pair), associated objects as
    once-flags (`Source/Hooks/UI/SettingsButton.m:6`), or an owner-key cache
    (`StoryGhost.m:1089`).
-10. **Only remove your own views.** `StoryGhost.m:1091` filters by Theta's own tag before
+10. **Never inline-patch `__TEXT` under `SIDELOAD`.** `MSHookFunction` dirties a signed page, and
+    the kernel kills the process on first execution with `CODESIGNING`/"Invalid Page" — a launch
+    crash, since these flags are read during startup. Gate every `ThetaMSHookFunction` call site
+    on `#ifdef SIDELOAD`.
+11. **Only remove your own views.** `StoryGhost.m:1091` filters by Theta's own tag before
     removing subviews rather than stripping every `UIButton`.
 
 ## 5. Adding a feature

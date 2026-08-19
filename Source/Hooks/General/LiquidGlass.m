@@ -108,6 +108,29 @@ static NSInteger hook_IGTabBarStyleForLauncherSet(NSInteger set) {
 }
 
 static BOOL theta_tryInstallLiquidGlassTabBarCSymbolHooks(void) {
+#ifdef SIDELOAD
+    /* Never inline-patch __TEXT in a sideloaded build.
+     *
+     * Substrate implements MSHookFunction by making the target page writable and writing a branch
+     * into it. On a jailbroken device that is fine. In a re-signed app it is fatal: the page ends
+     * up rw- (non-executable) and dirty, so it no longer matches the code signature, and the first
+     * call into it is killed by the kernel — EXC_BAD_ACCESS / KERN_PROTECTION_FAILURE with
+     * termination namespace CODESIGNING, indicator "Invalid Page".
+     *
+     * Seen on IG 441.0.0 / iOS 26.6 as a 100% launch crash: pc landed in a rw- 16K hole inside
+     * FBSharedFramework's __TEXT at IGFloatingTabBarEnabled, reached from METARunPreApplicationMain
+     * during startup. It only appears once a working Substrate is actually loadable in the bundle,
+     * which is why some sideload builds survived.
+     *
+     * The ObjC swizzles in THRegisterLiquidGlassHooks() only touch runtime dispatch tables, never
+     * signed pages, so they stay enabled — Liquid Glass just loses the C-flag overrides.
+     */
+    static dispatch_once_t sideloadOnce;
+    dispatch_once(&sideloadOnce, ^{
+        NSLog(@"[Theta] Liquid Glass: skipping C-symbol inline hooks — unsafe in a re-signed app");
+    });
+    return NO;
+#else
     static BOOL floatingDone = NO;
     static BOOL dynamicDone = NO;
     static BOOL enhancedDone = NO;
@@ -116,6 +139,13 @@ static BOOL theta_tryInstallLiquidGlassTabBarCSymbolHooks(void) {
     static BOOL styleDone = NO;
 
     if (!ThetaSubstrateLoad()) return NO;
+
+    /* Don't touch __TEXT at all unless a Liquid Glass toggle is on. The hook bodies already defer
+       to the original when disabled, so this is behaviour-neutral — both toggles are documented as
+       requiring a restart anyway. */
+    if (!ENABLED(@"Enable Liquid Glass Surfaces") && !ENABLED(@"Enable Liquid Glass Buttons")) {
+        return NO;
+    }
 
     if (!floatingDone) {
         void *sym = ThetaResolveInstagramExecutableSymbol("IGFloatingTabBarEnabled");
@@ -161,6 +191,7 @@ static BOOL theta_tryInstallLiquidGlassTabBarCSymbolHooks(void) {
     }
 
     return floatingDone && styleDone;
+#endif
 }
 
 // ── Floating glass tab bar: homecoming experiment gate bypass ─────────────────
