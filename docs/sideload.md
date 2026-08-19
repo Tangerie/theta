@@ -162,7 +162,9 @@ search in `AV1Transcoder.m:89`).
      -change /Library/Frameworks/CydiaSubstrate.framework/CydiaSubstrate → @executable_path/…
      -change @rpath/CydiaSubstrate.framework/CydiaSubstrate            → @executable_path/…
 8. stage CydiaSubstrate.framework (see §5)
-9. copy ThetaResources.bundle and, if present, ffmpeg.framework into the .app
+9. copy ThetaResources.bundle and, if present, ffmpeg.framework into the .app, then run
+   scripts/isolate-ffmpeg-dylibs.py over the staged ffmpeg.framework so its install names
+   can't collide with Instagram's own bundled FFmpeg (see media-pipeline.md §4)
 10. delete .DS_Store, xattr -rc, zip -9 -r output/Instagram_patched.ipa Payload
 ```
 

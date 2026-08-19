@@ -295,9 +295,13 @@ static void downloadHDVideoSelectingURL(IGVideo *inputVideo, NSString *selectedV
                        in folder mode it used to land in Documents/AudioNotes as a "saved" video
                        that nothing could play. Fail honestly instead. */
                     NSLog(@"AV1 conversion unavailable; refusing to save the raw DASH segment");
+                    /* Name the reason in the toast — without a console there is no other way to
+                       tell "ffmpeg didn't load" from "ffmpeg loaded and the encode failed". */
+                    NSString *reason = transcodeError.localizedDescription.length
+                        ? [NSString stringWithFormat:@"AV1 conversion failed: %@", transcodeError.localizedDescription]
+                        : @"This reel is AV1 and couldn't be converted.";
                     dispatch_async(dispatch_get_main_queue(), ^{
-                        showCompletionToast(progressToast, NO, @"Couldn't convert video",
-                                            @"This reel is AV1. Try another quality from the download menu.",
+                        showCompletionToast(progressToast, NO, @"Couldn't convert video", reason,
                                             [UIImage systemImageNamed:@"exclamationmark.triangle"], nil);
                     });
                     finishJob();

@@ -143,11 +143,35 @@ Photos may reject it, so:
 /Library/Application Support/ffmpeg.framework
 ```
 
-then `libavutil`, `libswscale`, `libavcodec`, `libavformat` are dlopened individually with
-`RTLD_GLOBAL` (noted in-tree: `RTLD_LOCAL` breaks inter-library resolution when each lib lives in
-its own framework directory). FFmpeg headers are provided at compile time by
+Within each of those, `dylibs/<lib>` is tried first, then `<lib>.framework/<lib>`, then `<lib>`;
+`libavutil`, `libswresample`, `libswscale`, `libavcodec`, `libavformat` are dlopened individually
+in that (dependency) order with `RTLD_LOCAL`. FFmpeg headers are provided at compile time by
 `-I"$(THEOS_PROJECT_DIR)/layout/Library/Application Support/ffmpeg.framework"` — headers only, no
 link dependency. **FFmpeg must stay optional**: every call site has an AVFoundation fallback.
+
+#### Install-name isolation (do not remove)
+
+**Instagram ships its own stripped FFmpeg** — a ~530 KB `libavcodec` and a ~96 KB `libavutil` in
+`Instagram.app/Frameworks/`, loaded at launch. Their install names are byte-for-byte the ones our
+vendored FFmpeg uses (`@rpath/libavcodec.framework/libavcodec`, …), and **neither set carries an
+`LC_RPATH`**, so `@rpath` only ever expands through the app's own `@executable_path/Frameworks`.
+Consequences, all confirmed from a device crash report's image list:
+
+- our `libavformat` binds to Instagram's stripped `libavcodec`/`libavutil` instead of ours;
+- `libswresample`, which Instagram doesn't ship, can't be found at all, so the `dlopen` fails;
+- `AV1Transcoder` reports "ffmpeg didn't load", every AV1 reel falls through to the AVFoundation
+  fallback, and (before this was understood) the raw DASH segment got saved as an unplayable file.
+
+`scripts/isolate-ffmpeg-dylibs.py` fixes this at build time: it moves each dylib to
+`<ffmpeg.framework>/dylibs/<name>` and rewrites its own install name and its sibling dependencies
+to `@loader_path/<name>`. Those strings are shorter than the `@rpath/…` ones they replace, so they
+patch in place with no load-command resizing, and they can never match Instagram's copies in either
+direction. It runs from `build.sh` (sideload staging) and from the Makefile's `after-stage::` hook
+(`.deb` staging); it is idempotent and must only ever run against a *staged* copy, never against
+`layout/` in the repo.
+
+**Never "fix" this by deleting `Instagram.app/Frameworks/libav*.framework` — those are Instagram's
+own libraries.**
 
 Separately, `MediaSelectionViewController -convertFileToMP3:` (`:2298`) uses the higher-level
 `FFmpegKit` ObjC class from the same framework via `dlopen` + `NSInvocation`, running

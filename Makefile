@@ -68,5 +68,13 @@ before-all::
 after-all::
 	@rm -f TweakCOMPILE.xm
 
+# Instagram bundles its own stripped libavcodec/libavutil, whose @rpath install names collide with
+# the ffmpeg we ship. Rewrite ours to @loader_path in the staged copy so dyld can't mix the two.
+after-stage::
+	@for d in "$(THEOS_STAGING_DIR)/Library/Application Support/ffmpeg.framework" \
+	          "$(THEOS_STAGING_DIR)/var/jb/Library/Application Support/ffmpeg.framework"; do \
+		[ -d "$$d" ] && python3 scripts/isolate-ffmpeg-dylibs.py "$$d"; \
+	done; true
+
 after-install::
 	install.exec "uiopen --bundleid com.burbn.instagram"

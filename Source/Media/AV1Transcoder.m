@@ -83,6 +83,11 @@ static void *theta_dlopenFFmpegLibrary(NSArray<NSString *> *bases, NSString *lib
     NSFileManager *fm = [NSFileManager defaultManager];
     for (NSString *base in bases) {
         NSArray<NSString *> *relative = @[
+            /* scripts/isolate-ffmpeg-dylibs.py moves the dylibs here at build time and rewrites
+               their install names to @loader_path/<name>, so they can't collide with the stripped
+               libavcodec/libavutil Instagram bundles under Frameworks/. Try it first; the framework
+               layout stays as a fallback for an ffmpeg install staged before that script existed. */
+            [NSString stringWithFormat:@"dylibs/%@", libName],
             [NSString stringWithFormat:@"%@.framework/%@", libName, libName],
             libName,
         ];
@@ -129,25 +134,26 @@ static BOOL loadFFmpegLibraries(NSError **error) {
         return NO;
     }
 
-    // Load libraries in dependency order. Use RTLD_GLOBAL so interdependencies resolve when
-    // loading from separate framework dirs (e.g. libavcodec needs libavutil); RTLD_LOCAL
-    // can cause dlopen to fail on jailbroken where the loader doesn't search other framework paths.
-    int dlflags = RTLD_LAZY | RTLD_GLOBAL;
+    /* Load in dependency order. Once install names are @loader_path-relative each library finds
+       its own siblings structurally, so keep the handles out of the global namespace — Instagram
+       has its own av_* symbols loaded and there is no reason for the two sets to see each other. */
+    int dlflags = RTLD_LAZY | RTLD_LOCAL;
     libavutil_handle     = theta_dlopenFFmpegLibrary(bases, @"libavutil", dlflags);
-    libswresample_handle = theta_dlopenFFmpegLibrary(bases, @"libswresample", dlflags); // optional
+    libswresample_handle = theta_dlopenFFmpegLibrary(bases, @"libswresample", dlflags);
     libswscale_handle    = theta_dlopenFFmpegLibrary(bases, @"libswscale", dlflags);
     libavcodec_handle    = theta_dlopenFFmpegLibrary(bases, @"libavcodec", dlflags);
     libavformat_handle   = theta_dlopenFFmpegLibrary(bases, @"libavformat", dlflags);
 
     NSMutableArray<NSString *> *missing = [NSMutableArray array];
-    if (!libavutil_handle)   [missing addObject:@"libavutil"];
-    if (!libswscale_handle)  [missing addObject:@"libswscale"];
-    if (!libavcodec_handle)  [missing addObject:@"libavcodec"];
-    if (!libavformat_handle) [missing addObject:@"libavformat"];
+    if (!libavutil_handle)     [missing addObject:@"libavutil"];
+    if (!libswresample_handle) [missing addObject:@"libswresample"];
+    if (!libswscale_handle)    [missing addObject:@"libswscale"];
+    if (!libavcodec_handle)    [missing addObject:@"libavcodec"];
+    if (!libavformat_handle)   [missing addObject:@"libavformat"];
     if (missing.count) {
-        NSString *msg = [NSString stringWithFormat:@"ffmpeg incomplete, missing: %@ (searched %@)",
-                         [missing componentsJoinedByString:@", "], bases];
-        NSLog(@"[Theta] %@", msg);
+        NSString *msg = [NSString stringWithFormat:@"ffmpeg didn't load (%@)",
+                         [missing componentsJoinedByString:@", "]];
+        NSLog(@"[Theta] %@ — searched %@", msg, bases);
         if (error) *error = [NSError errorWithDomain:@"AV1Transcoder" code:-1 userInfo:@{NSLocalizedDescriptionKey: msg}];
         return NO;
     }

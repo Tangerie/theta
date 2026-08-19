@@ -2335,22 +2335,27 @@ static void * const playerKey = &playerKey;
             __block NSString *frameworkPath;
 
             dispatch_once(&onceToken, ^{
+                /* dylibs/ffmpegkit is where scripts/isolate-ffmpeg-dylibs.py puts it, with its
+                   @rpath dependencies rewritten to @loader_path so it binds to our libav* and not
+                   to the stripped ones Instagram bundles. The other paths are older layouts. */
 #ifndef SIDELOAD
-                frameworkPath = ROOT_PATH_NS(@"/Library/Application Support/ffmpeg.framework/ffmpegkit");
-                ffmpegkitHandle = dlopen([frameworkPath UTF8String], RTLD_NOW);
-                if (!ffmpegkitHandle) {
-                    NSString *alternativePath = ROOT_PATH_NS(@"/Library/Application Support/ffmpeg.framework/ffmpegkit");
-                    ffmpegkitHandle = dlopen([alternativePath UTF8String], RTLD_NOW);
+                NSString *ffmpegRoot = ROOT_PATH_NS(@"/Library/Application Support/ffmpeg.framework");
+                for (NSString *rel in @[@"dylibs/ffmpegkit", @"ffmpegkit.framework/ffmpegkit", @"ffmpegkit"]) {
+                    frameworkPath = [ffmpegRoot stringByAppendingPathComponent:rel];
+                    ffmpegkitHandle = dlopen([frameworkPath UTF8String], RTLD_NOW);
+                    if (ffmpegkitHandle) break;
                 }
 #else
                 NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
                 NSString *frameworksPath = [[NSBundle mainBundle] privateFrameworksPath];
-                NSArray *sideloadPaths = @[
-                    [bundlePath stringByAppendingPathComponent:@"ffmpeg.framework/ffmpegkit"],
-                    [frameworksPath stringByAppendingPathComponent:@"ffmpeg.framework/ffmpegkit"],
-                    [[NSBundle mainBundle] pathForResource:@"ffmpegkit" ofType:nil inDirectory:@"ffmpeg.framework"] ?: @"",
-                    @"/ffmpeg.framework/ffmpegkit"
-                ];
+                NSMutableArray *sideloadPaths = [NSMutableArray array];
+                for (NSString *dir in @[bundlePath ?: @"", frameworksPath ?: @""]) {
+                    if (!dir.length) continue;
+                    NSString *root = [dir stringByAppendingPathComponent:@"ffmpeg.framework"];
+                    for (NSString *rel in @[@"dylibs/ffmpegkit", @"ffmpegkit.framework/ffmpegkit", @"ffmpegkit"]) {
+                        [sideloadPaths addObject:[root stringByAppendingPathComponent:rel]];
+                    }
+                }
                 for (NSString *path in sideloadPaths) {
                     if (path.length > 0) {
                         frameworkPath = path;
