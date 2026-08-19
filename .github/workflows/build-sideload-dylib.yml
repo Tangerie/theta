@@ -179,6 +179,55 @@ jobs:
           VERSION="$(awk -F': ' '/^Version:/ {print $2}' control | tr -d '[:space:]')"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Assemble sideload kit
+        # Theta.dylib on its own is not enough: the AV1 transcode path needs the bundled FFmpeg
+        # inside the .app, with the install-name isolation applied (Instagram ships its own
+        # libavcodec/libavutil under the same @rpath names). Ship the drop-in files so the app
+        # can be assembled without a Mac / build.sh.
+        run: |
+          set -euo pipefail
+          KIT="artifact/kit"
+          mkdir -p "$KIT"
+          cp artifact/Theta.dylib "$KIT/Theta.dylib"
+
+          cp -R "layout/Library/Application Support/ffmpeg.framework" "$KIT/ffmpeg.framework"
+          python3 scripts/isolate-ffmpeg-dylibs.py "$KIT/ffmpeg.framework"
+
+          if [ -d ThetaResources.bundle ]; then
+            cp -R ThetaResources.bundle "$KIT/ThetaResources.bundle"
+          fi
+
+          # Same normalisation build.sh's stage_substrate_framework() does.
+          if [ -d third_party/CydiaSubstrate.framework ]; then
+            cp -R third_party/CydiaSubstrate.framework "$KIT/CydiaSubstrate.framework"
+            if [ ! -f "$KIT/CydiaSubstrate.framework/CydiaSubstrate" ] \
+               && [ -f "$KIT/CydiaSubstrate.framework/CydiaSubstrate.dylib" ]; then
+              cp -f "$KIT/CydiaSubstrate.framework/CydiaSubstrate.dylib" \
+                    "$KIT/CydiaSubstrate.framework/CydiaSubstrate"
+            fi
+            install_name_tool -id "@executable_path/CydiaSubstrate.framework/CydiaSubstrate" \
+              "$KIT/CydiaSubstrate.framework/CydiaSubstrate" 2>/dev/null || true
+            codesign --remove-signature "$KIT/CydiaSubstrate.framework/CydiaSubstrate" 2>/dev/null || true
+            codesign -f -s - "$KIT/CydiaSubstrate.framework/CydiaSubstrate"
+          fi
+
+          {
+            printf 'Theta sideload kit\n'
+            printf '==================\n\n'
+            printf 'Copy every entry beside this file into the root of Payload/Instagram.app/\n'
+            printf '(beside the Instagram executable), then inject Theta.dylib with your signer\n'
+            printf '(KSign, Sideloadly, ESign, ...) as "@executable_path/Theta.dylib".\n\n'
+            printf '  Theta.dylib               the tweak\n'
+            printf '  ffmpeg.framework/         required for saving AV1 reels\n'
+            printf '  ThetaResources.bundle/    icons used by the Theta UI\n'
+            printf '  CydiaSubstrate.framework/ optional under sideload (weak-linked, unused)\n\n'
+            printf 'Do NOT delete anything under Instagram.app/Frameworks/ - Instagram ships its\n'
+            printf 'own stripped libavcodec/libavutil there and needs them.\n'
+          } > "$KIT/README.txt"
+
+          ( cd artifact && zip -9 -r -y -q Theta-sideload-kit.zip kit )
+          ls -lh artifact/Theta-sideload-kit.zip
+
       - name: Report
         run: |
           {
@@ -194,14 +243,18 @@ jobs:
             otool -L artifact/Theta.dylib
             echo '```'
             echo
-            echo "Not an installable IPA — injecting into a decrypted Instagram binary"
-            echo "still needs \`./build.sh sideload\` with \`input/Payload/Instagram.app\` present."
+            echo "\`Theta-sideload-kit.zip\` holds the drop-in files (dylib, patched"
+            echo "ffmpeg.framework, resources) to copy into \`Payload/Instagram.app/\` before"
+            echo "injecting with an on-device signer. Neither is an installable IPA —"
+            echo "\`./build.sh sideload\` still does the whole job when a Mac is available."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
         with:
           name: Theta-dylib-sideload-${{ steps.stage.outputs.version }}-${{ github.sha }}
-          path: artifact/Theta.dylib
+          path: |
+            artifact/Theta.dylib
+            artifact/Theta-sideload-kit.zip
           if-no-files-found: error
           retention-days: 14
 
@@ -231,9 +284,9 @@ jobs:
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists — replacing the asset"
-            gh release upload "$TAG" artifact/Theta.dylib --clobber
+            gh release upload "$TAG" artifact/Theta.dylib artifact/Theta-sideload-kit.zip --clobber
           else
-            gh release create "$TAG" artifact/Theta.dylib \
+            gh release create "$TAG" artifact/Theta.dylib artifact/Theta-sideload-kit.zip \
               --target "$GITHUB_SHA" \
               --title "Theta ${VERSION} (${SHORT})" \
               --notes-file "$NOTES"
