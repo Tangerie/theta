@@ -53,18 +53,24 @@ into the `.app`, cleans `.DS_Store`/xattrs, and zips `Payload` into the IPA.
 
 ### CI
 
-`.github/workflows/build-sideload-dylib.yml` compiles the sideload dylib on `macos-14`
-(`workflow_dispatch`, PRs, and pushes to `main`/`claude/**`, skipping markdown-only changes). It
+`.github/workflows/build-sideload-dylib.yml` compiles the sideload dylib on `macos-14`, on pushes
+to **`main` only** plus manual `workflow_dispatch`, skipping markdown-only changes. Feature
+branches therefore get no CI — the compile is verified when the change reaches `main`. It
 installs Theos, unpacks the vendored `sdks/iPhoneOS14.5.sdk.tar.xz`, symlinks
 `$THEOS/toolchain/Xcode14.xctoolchain` at the selected Xcode (the Makefile hard-codes that
 `PREFIX`), fills in `$THEOS/vendor/lib/CydiaSubstrate.framework` from `third_party/` if the Theos
 clone lacks it, runs `gmake SIDELOAD=1`, then applies the same `install_name_tool` rewrites and
 ad-hoc signature `build.sh` applies when staging the dylib into an `.app`.
 
-It is a **compile check**, not a release pipeline: it produces `Theta.dylib` as an artifact and
-stops before injection, since `./build.sh sideload` needs a decrypted
-`input/Payload/Instagram.app/Instagram` that cannot be committed. Nothing verifies runtime
-behavior — that is still manual, on device.
+It then uploads `Theta.dylib` as a 14-day artifact and, on `main`, publishes a GitHub release
+tagged `v<control version>-<short sha>` with the dylib attached (`gh release create`, or
+`upload --clobber` if that tag already exists, so re-runs are safe). `control`'s `Version:` rarely
+changes, which is why the commit is part of the tag.
+
+It stops before injection, since `./build.sh sideload` needs a decrypted
+`input/Payload/Instagram.app/Instagram` that cannot be committed — so a release asset is the
+dylib, not an installable IPA. Nothing verifies runtime behavior either; that is still manual, on
+device.
 
 There are **no tests or linters** in the repository. `Theta_CFLAGS` also suppresses
 `-Wincompatible-pointer-types`, `-Wnullability-completeness`, `-Wunused-*`, and

@@ -29,7 +29,7 @@ make install [ROOTLESS=1]              # needs THEOS_DEVICE_IP; reopens Instagra
 
 There are no tests or linters. Verification is manual on-device.
 
-CI (`.github/workflows/build-sideload-dylib.yml`) builds `Theta.dylib` with `SIDELOAD=1` on a `macos-14` runner and uploads it as an artifact — a compile check only. It stops before IPA injection, which needs a decrypted Instagram binary that can't be in the repo.
+CI (`.github/workflows/build-sideload-dylib.yml`) builds `Theta.dylib` with `SIDELOAD=1` on a `macos-14` runner, uploads it as an artifact, and publishes a GitHub release tagged `v<control version>-<short sha>`. It runs on pushes to `main` only (plus manual `workflow_dispatch`), so branches get no CI. It stops before IPA injection, which needs a decrypted Instagram binary that can't be in the repo.
 
 ## Compilation model (read before adding files)
 

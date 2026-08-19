@@ -9,14 +9,9 @@ name: Build sideload dylib
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
   push:
     branches:
       - main
-      - 'claude/**'
     paths-ignore:
       - '**/*.md'
       - 'docs/**'
@@ -24,6 +19,9 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: write
 
 jobs:
   dylib:
@@ -206,3 +204,38 @@ jobs:
           path: artifact/Theta.dylib
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publish release
+        # workflow_dispatch can target any ref, so gate on main explicitly rather than
+        # relying on the push filter alone.
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.stage.outputs.version }}
+        run: |
+          set -euo pipefail
+          SHORT="${GITHUB_SHA:0:7}"
+          # control's Version: rarely changes, so the tag carries the commit to stay unique.
+          TAG="v${VERSION}-${SHORT}"
+          NOTES="$RUNNER_TEMP/release-notes.md"
+
+          {
+            printf 'Sideload build of `Theta.dylib` (`SIDELOAD=1`) from `%s`.\n\n' "$SHORT"
+            printf 'Install name is `@executable_path/Theta.dylib` and the weak CydiaSubstrate dependency\n'
+            printf 'points at `@executable_path/CydiaSubstrate.framework/CydiaSubstrate`, so it drops\n'
+            printf 'straight into a patched `Instagram.app`.\n\n'
+            printf 'This is the dylib only, not an installable IPA. Producing one still needs\n'
+            printf '`./build.sh sideload` with a decrypted `input/Payload/Instagram.app`, which also\n'
+            printf 'stages `CydiaSubstrate.framework` and `ffmpeg.framework` into the app.\n'
+          } > "$NOTES"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — replacing the asset"
+            gh release upload "$TAG" artifact/Theta.dylib --clobber
+          else
+            gh release create "$TAG" artifact/Theta.dylib \
+              --target "$GITHUB_SHA" \
+              --title "Theta ${VERSION} (${SHORT})" \
+              --notes-file "$NOTES"
+          fi
+          echo "Published release [\`$TAG\`]($(gh release view "$TAG" --json url --jq .url))" >> "$GITHUB_STEP_SUMMARY"
