@@ -120,9 +120,6 @@ static void downloadHDVideoSelectingURL(IGVideo *inputVideo, NSString *selectedV
     
     // Run everything on a background queue to avoid blocking UI
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-      /* Nothing below may let an exception escape: this is a bare dispatch block, so an
-         AVFoundation raise here terminates Instagram instead of failing the save. */
-      @try {
         NSString *videoManifest = [[NSString alloc] initWithData:videoData encoding:NSUTF8StringEncoding];
         NSString *videoURLString = selectedVideoURL.length > 0 ? selectedVideoURL : IGDashManifestBestCompatibleURL(videoManifest);
         NSString *audioURLString = IGDashManifestBestAudioURL(videoManifest);
@@ -149,6 +146,10 @@ static void downloadHDVideoSelectingURL(IGVideo *inputVideo, NSString *selectedV
             theta_removePath(workDir);
             [ThetaHelper endGlobalDownload];
         };
+        /* From here down nothing may let an exception escape: this is a bare dispatch block, so
+           an AVFoundation raise would terminate Instagram instead of failing the save. Opened
+           after finishJob() is defined so the handler can release the work dir and the mutex. */
+      @try {
         NSString *videoPath = [workDir stringByAppendingPathComponent:@"video.mp4"];
         __block NSString *audioPath = [workDir stringByAppendingPathComponent:@"audio.m4a"];
         NSFileManager *fm = [NSFileManager defaultManager];
