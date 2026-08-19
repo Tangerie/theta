@@ -146,6 +146,10 @@ static void downloadHDVideoSelectingURL(IGVideo *inputVideo, NSString *selectedV
             theta_removePath(workDir);
             [ThetaHelper endGlobalDownload];
         };
+        /* From here down nothing may let an exception escape: this is a bare dispatch block, so
+           an AVFoundation raise would terminate Instagram instead of failing the save. Opened
+           after finishJob() is defined so the handler can release the work dir and the mutex. */
+      @try {
         NSString *videoPath = [workDir stringByAppendingPathComponent:@"video.mp4"];
         __block NSString *audioPath = [workDir stringByAppendingPathComponent:@"audio.m4a"];
         NSFileManager *fm = [NSFileManager defaultManager];
@@ -420,8 +424,20 @@ static void downloadHDVideoSelectingURL(IGVideo *inputVideo, NSString *selectedV
         }
         
         CMTime videoDur = videoAssetForMerge.duration;
+        /* Bail out instead of falling back to videoDur: mergeDur is *derived* from it, so a bad
+           videoDur would survive the check and reach insertTimeRange:, which raises rather than
+           reporting through its error out-param. */
+        if (!CMTIME_IS_NUMERIC(videoDur) || CMTIME_COMPARE_INLINE(videoDur, <=, kCMTimeZero)) {
+            NSLog(@"ThetaSave: unusable video duration for %@", videoPath);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                showCompletionToast(progressToast, NO, @"Error", @"Video file is unreadable", [UIImage systemImageNamed:@"exclamationmark.triangle"], nil);
+            });
+            finishJob();
+            return;
+        }
         CMTime mergeDur = videoDur;
-        if (audioTrackForMerge && audioAssetForMerge && CMTIME_IS_NUMERIC(audioAssetForMerge.duration)) {
+        if (audioTrackForMerge && audioAssetForMerge && CMTIME_IS_NUMERIC(audioAssetForMerge.duration)
+            && CMTIME_COMPARE_INLINE(audioAssetForMerge.duration, >, kCMTimeZero)) {
             mergeDur = CMTimeMinimum(videoDur, audioAssetForMerge.duration);
         }
         if (!CMTIME_IS_NUMERIC(mergeDur) || CMTIME_COMPARE_INLINE(mergeDur, <=, kCMTimeZero)) {
@@ -460,7 +476,14 @@ static void downloadHDVideoSelectingURL(IGVideo *inputVideo, NSString *selectedV
         
         AVAssetExportSession *exportSession = [[AVAssetExportSession alloc] initWithAsset:composition presetName:AVAssetExportPresetHighestQuality];
         exportSession.outputURL = outputURL;
-        exportSession.outputFileType = AVFileTypeMPEG4;
+        if (!ThetaExportSessionSetFileType(exportSession, AVFileTypeMPEG4)) {
+            NSLog(@"ThetaSave: export session cannot write MPEG-4");
+            dispatch_async(dispatch_get_main_queue(), ^{
+                showCompletionToast(progressToast, NO, @"Error", @"Could not prepare video for saving", [UIImage systemImageNamed:@"exclamationmark.triangle"], nil);
+            });
+            finishJob();
+            return;
+        }
         if ([exportSession respondsToSelector:@selector(setShouldOptimizeForNetworkUse:)]) {
             exportSession.shouldOptimizeForNetworkUse = YES;
         }
@@ -766,6 +789,13 @@ static void downloadHDVideoSelectingURL(IGVideo *inputVideo, NSString *selectedV
                 dispatch_semaphore_signal(semaphore);
             }
         }];
+      } @catch (NSException *exception) {
+        NSLog(@"[Theta] reel save failed with exception: %@ — %@", exception.name, exception.reason);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            showCompletionToast(progressToast, NO, @"Error", @"Could not save this video", [UIImage systemImageNamed:@"exclamationmark.triangle"], nil);
+        });
+        finishJob();
+      }
     });
 }
 

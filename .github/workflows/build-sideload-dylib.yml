@@ -1,0 +1,241 @@
+name: Build sideload dylib
+
+# Builds Theta.dylib with SIDELOAD=1 and uploads it as an artifact.
+#
+# This deliberately stops short of ./build.sh sideload: injecting into
+# input/Payload/Instagram.app needs a *decrypted* Instagram binary, which cannot
+# live in the repo. Everything else the build needs (patched iOS 14.5 SDK,
+# ffmpeg.framework headers, CydiaSubstrate.framework) is already vendored here.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  dylib:
+    runs-on: macos-14
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set THEOS
+        run: echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
+
+      - name: Select Xcode
+        # The build pins SDKVERSION = 14.5 and uses the patched SDK from sdks/.
+        # Newer clang releases are historically the thing that breaks first, so
+        # prefer a 15.x toolchain and fall back to whatever the image selected.
+        run: |
+          set -euo pipefail
+          for v in Xcode_15.4 Xcode_15.3 Xcode_15.2 Xcode_15.1 Xcode_15.0.1; do
+            if [ -d "/Applications/$v.app" ]; then
+              sudo xcode-select -s "/Applications/$v.app"
+              break
+            fi
+          done
+          echo "Using $(xcode-select -p)"
+          xcodebuild -version || true
+
+      - name: Install build tools
+        # build.sh prefers gmake over macOS's make 3.81. Add `dpkg` here if you ever
+        # switch this job to `make package` (Theos's .deb stage wants dpkg-deb).
+        run: brew install make ldid
+
+      - name: Cache Theos
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.THEOS }}
+          key: theos-${{ runner.os }}-${{ hashFiles('sdks/iPhoneOS14.5.sdk.tar.xz') }}-v2
+
+      - name: Install Theos
+        run: |
+          set -euo pipefail
+          if [ ! -f "$THEOS/makefiles/common.mk" ]; then
+            rm -rf "$THEOS"
+            git clone --quiet --recursive https://github.com/theos/theos.git "$THEOS"
+          fi
+          mkdir -p "$THEOS/sdks" "$THEOS/toolchain" "$THEOS/vendor/lib"
+
+      - name: Unpack patched iPhoneOS 14.5 SDK
+        run: |
+          set -euo pipefail
+          if [ ! -d "$THEOS/sdks/iPhoneOS14.5.sdk" ]; then
+            tar -xJf sdks/iPhoneOS14.5.sdk.tar.xz -C "$THEOS/sdks"
+          fi
+          test -d "$THEOS/sdks/iPhoneOS14.5.sdk" || { echo "::error::SDK not unpacked"; exit 1; }
+
+      - name: Provide libc++ headers to the 14.5 SDK
+        # TweakCOMPILE.xm is compiled as Objective-C++ (Logos emits .mm), so the SDK's
+        # simd/math.h takes its C++ branch and `#include <cmath>`. The patched 14.5 SDK
+        # ships no libc++ headers, so borrow them from the selected Xcode.
+        run: |
+          set -euo pipefail
+          SDK="$THEOS/sdks/iPhoneOS14.5.sdk"
+          if [ ! -d "$SDK/usr/include/c++/v1" ]; then
+            for src in \
+              "$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/include/c++" \
+              "$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null || true)/usr/include/c++" \
+              "$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || true)/usr/include/c++"; do
+              if [ -d "$src/v1" ]; then
+                echo "Copying libc++ headers from $src"
+                mkdir -p "$SDK/usr/include/c++"
+                cp -R "$src/v1" "$SDK/usr/include/c++/v1"
+                break
+              fi
+            done
+          fi
+          test -f "$SDK/usr/include/c++/v1/cmath" \
+            || { echo "::error::no libc++ headers available for $SDK"; exit 1; }
+
+      - name: Point Xcode14.xctoolchain at the selected Xcode
+        # The Makefile hard-codes PREFIX = $THEOS/toolchain/Xcode14.xctoolchain/usr/bin/.
+        # Re-linked every run so a cached Theos can't pin a stale Xcode path.
+        run: |
+          set -euo pipefail
+          ln -sfn "$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain" \
+                  "$THEOS/toolchain/Xcode14.xctoolchain"
+          test -x "$THEOS/toolchain/Xcode14.xctoolchain/usr/bin/clang" \
+            || { echo "::error::toolchain symlink is wrong"; exit 1; }
+
+      - name: Ensure vendored CydiaSubstrate.framework
+        # SIDELOAD builds use -I$THEOS/vendor/lib/CydiaSubstrate.framework/Headers and
+        # -F$THEOS/vendor/lib -weak_framework CydiaSubstrate. If the Theos clone doesn't
+        # provide it, use the copy already in third_party/.
+        run: |
+          set -euo pipefail
+          if [ ! -d "$THEOS/vendor/lib/CydiaSubstrate.framework/Headers" ]; then
+            echo "Theos has no vendored CydiaSubstrate.framework — using third_party/"
+            rm -rf "$THEOS/vendor/lib/CydiaSubstrate.framework"
+            cp -R third_party/CydiaSubstrate.framework "$THEOS/vendor/lib/"
+          fi
+          ls -la "$THEOS/vendor/lib/CydiaSubstrate.framework"
+
+      - name: Build (SIDELOAD=1)
+        # `before-all::` regenerates TweakCOMPILE.xm via scripts/assemble.py;
+        # `after-all::` deletes it again.
+        run: gmake SIDELOAD=1
+
+      - name: Stage the dylib
+        id: stage
+        # Mirrors what build.sh does when it copies the dylib into the .app: set the
+        # install name, repoint the weak CydiaSubstrate dependency, ad-hoc sign.
+        run: |
+          set -euo pipefail
+          # Check the canonical locations build.sh uses first. A bare `find` would also
+          # match .theos/obj/arm64/Theta.dylib.dSYM/.../DWARF/Theta.dylib, which is a
+          # debug-symbol companion, not a loadable image.
+          DYLIB=""
+          for cand in \
+            .theos/obj/Theta.dylib \
+            .theos/obj/arm64/Theta.dylib \
+            .theos/_/Library/MobileSubstrate/DynamicLibraries/Theta.dylib \
+            .theos/_/usr/lib/TweakInject/Theta.dylib; do
+            if [ -f "$cand" ]; then DYLIB="$cand"; break; fi
+          done
+          if [ -z "$DYLIB" ]; then
+            DYLIB="$(find .theos -name '*.dSYM' -prune -o -name 'Theta.dylib' -type f -print | head -1)"
+          fi
+          if [ -z "$DYLIB" ]; then
+            echo "::error::Theta.dylib not found under .theos"
+            find .theos -type f -name '*.dylib' || true
+            exit 1
+          fi
+          echo "Found $DYLIB"
+          if ! file "$DYLIB" | grep -q 'dynamically linked shared library'; then
+            echo "::error::$DYLIB is not a loadable dylib"
+            file "$DYLIB"
+            exit 1
+          fi
+
+          mkdir -p artifact
+          cp "$DYLIB" artifact/Theta.dylib
+
+          install_name_tool -id "@executable_path/Theta.dylib" artifact/Theta.dylib
+          install_name_tool -change \
+            "/Library/Frameworks/CydiaSubstrate.framework/CydiaSubstrate" \
+            "@executable_path/CydiaSubstrate.framework/CydiaSubstrate" \
+            artifact/Theta.dylib 2>/dev/null || true
+          install_name_tool -change \
+            "@rpath/CydiaSubstrate.framework/CydiaSubstrate" \
+            "@executable_path/CydiaSubstrate.framework/CydiaSubstrate" \
+            artifact/Theta.dylib 2>/dev/null || true
+
+          codesign --remove-signature artifact/Theta.dylib 2>/dev/null || true
+          codesign -f -s - artifact/Theta.dylib
+
+          VERSION="$(awk -F': ' '/^Version:/ {print $2}' control | tr -d '[:space:]')"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Report
+        run: |
+          {
+            echo "### Theta.dylib (SIDELOAD=1)"
+            echo
+            echo "- Version: \`${{ steps.stage.outputs.version }}\`"
+            echo "- Xcode: \`$(xcode-select -p)\`"
+            echo "- Size: \`$(du -h artifact/Theta.dylib | cut -f1)\`"
+            echo
+            echo '```'
+            file artifact/Theta.dylib
+            echo
+            otool -L artifact/Theta.dylib
+            echo '```'
+            echo
+            echo "Not an installable IPA — injecting into a decrypted Instagram binary"
+            echo "still needs \`./build.sh sideload\` with \`input/Payload/Instagram.app\` present."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Theta-dylib-sideload-${{ steps.stage.outputs.version }}-${{ github.sha }}
+          path: artifact/Theta.dylib
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish release
+        # workflow_dispatch can target any ref, so gate on main explicitly rather than
+        # relying on the push filter alone.
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.stage.outputs.version }}
+        run: |
+          set -euo pipefail
+          SHORT="${GITHUB_SHA:0:7}"
+          # control's Version: rarely changes, so the tag carries the commit to stay unique.
+          TAG="v${VERSION}-${SHORT}"
+          NOTES="$RUNNER_TEMP/release-notes.md"
+
+          {
+            printf 'Sideload build of `Theta.dylib` (`SIDELOAD=1`) from `%s`.\n\n' "$SHORT"
+            printf 'Install name is `@executable_path/Theta.dylib` and the weak CydiaSubstrate dependency\n'
+            printf 'points at `@executable_path/CydiaSubstrate.framework/CydiaSubstrate`, so it drops\n'
+            printf 'straight into a patched `Instagram.app`.\n\n'
+            printf 'This is the dylib only, not an installable IPA. Producing one still needs\n'
+            printf '`./build.sh sideload` with a decrypted `input/Payload/Instagram.app`, which also\n'
+            printf 'stages `CydiaSubstrate.framework` and `ffmpeg.framework` into the app.\n'
+          } > "$NOTES"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — replacing the asset"
+            gh release upload "$TAG" artifact/Theta.dylib --clobber
+          else
+            gh release create "$TAG" artifact/Theta.dylib \
+              --target "$GITHUB_SHA" \
+              --title "Theta ${VERSION} (${SHORT})" \
+              --notes-file "$NOTES"
+          fi
+          echo "Published release [\`$TAG\`]($(gh release view "$TAG" --json url --jq .url))" >> "$GITHUB_STEP_SUMMARY"

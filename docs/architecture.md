@@ -51,7 +51,28 @@ rewrites the dylib's install name and its Substrate dependency to `@executable_p
 `ThetaResources.bundle` and (if present) `layout/Library/Application Support/ffmpeg.framework`
 into the `.app`, cleans `.DS_Store`/xattrs, and zips `Payload` into the IPA.
 
-There are **no tests, linters, or CI** in the repository. `Theta_CFLAGS` also suppresses
+### CI
+
+`.github/workflows/build-sideload-dylib.yml` compiles the sideload dylib on `macos-14`, on pushes
+to **`main` only** plus manual `workflow_dispatch`, skipping markdown-only changes. Feature
+branches therefore get no CI — the compile is verified when the change reaches `main`. It
+installs Theos, unpacks the vendored `sdks/iPhoneOS14.5.sdk.tar.xz`, symlinks
+`$THEOS/toolchain/Xcode14.xctoolchain` at the selected Xcode (the Makefile hard-codes that
+`PREFIX`), fills in `$THEOS/vendor/lib/CydiaSubstrate.framework` from `third_party/` if the Theos
+clone lacks it, runs `gmake SIDELOAD=1`, then applies the same `install_name_tool` rewrites and
+ad-hoc signature `build.sh` applies when staging the dylib into an `.app`.
+
+It then uploads `Theta.dylib` as a 14-day artifact and, on `main`, publishes a GitHub release
+tagged `v<control version>-<short sha>` with the dylib attached (`gh release create`, or
+`upload --clobber` if that tag already exists, so re-runs are safe). `control`'s `Version:` rarely
+changes, which is why the commit is part of the tag.
+
+It stops before injection, since `./build.sh sideload` needs a decrypted
+`input/Payload/Instagram.app/Instagram` that cannot be committed — so a release asset is the
+dylib, not an installable IPA. Nothing verifies runtime behavior either; that is still manual, on
+device.
+
+There are **no tests or linters** in the repository. `Theta_CFLAGS` also suppresses
 `-Wincompatible-pointer-types`, `-Wnullability-completeness`, `-Wunused-*`, and
 `-Wdeprecated-declarations`, so the compiler catches noticeably less than usual — in particular
 mismatched hook function signatures will compile silently.
@@ -101,8 +122,14 @@ The corresponding constraints:
   via Makefile wildcards. They must `#import` their own headers from `Include/`, they cannot see
   the hook helpers, and several of them redefine `ENABLED` locally
   (e.g. `Source/UI/SettingsViewController.m:13`, `Source/UI/MessagesManager.m:5`).
-- The output extension is `.xm`, so Logos preprocessing runs. The only directive used is
-  `%c(Class)` (22 occurrences); there are no `%hook`/`%orig`/`%new` blocks anywhere.
+- The output extension is `.xm`, so Logos preprocessing runs and the TU is compiled as
+  Objective-**C++** (Logos emits `.mm`). That is why the amalgamated TU — and only it — needs
+  libc++ headers available to the 14.5 SDK; the other TUs are plain Objective-C. It also means
+  `%c(Class)` works: 22 occurrences, and there are no `%hook`/`%orig`/`%new` blocks anywhere.
+- Categories declared in more than one hook file land in the same TU twice, so the build emits
+  `-Wobjc-duplicate-category-definition` warnings (currently `UIButton (BlockTarget)` and
+  `UIGestureRecognizer (BlockTarget)`). Benign, but it means a category is effectively global to
+  the whole hook tree.
 
 ## 4. Load and initialization order
 

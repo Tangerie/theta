@@ -535,6 +535,33 @@ static BOOL ThetaAVAssetLoadKeys(AVAsset *asset) {
     return [asset statusOfValueForKey:@"tracks" error:&err] == AVKeyValueStatusLoaded;
 }
 
+BOOL ThetaExportSessionSetFileType(AVAssetExportSession *session, NSString *fileType) {
+    if (!session || !fileType.length) return NO;
+
+    /* Deprecated on iOS 16+ and can be empty before compatibility is determined; an empty list
+       means "unknown", not "nothing supported", so only reject on a populated mismatch. */
+    NSArray<NSString *> *supported = nil;
+    @try {
+        supported = session.supportedFileTypes;
+    } @catch (__unused NSException *e) {
+        supported = nil;
+    }
+    if (supported.count > 0 && ![supported containsObject:fileType]) {
+        NSLog(@"[Theta] export preset cannot write %@ (supports %@)", fileType, supported);
+        return NO;
+    }
+
+    @try {
+        session.outputFileType = fileType;
+    } @catch (NSException *e) {
+        /* This is the crash from the 441.0.0 / iOS 26.6 report: an unguarded setter raising
+           NSInvalidArgumentException out of a background queue and aborting the process. */
+        NSLog(@"[Theta] setOutputFileType:%@ raised: %@", fileType, e.reason);
+        return NO;
+    }
+    return YES;
+}
+
 static NSString *ThetaRenameAudioByMagic(NSString *path) {
     if (!path.length) return path;
     NSFileHandle *handle = [NSFileHandle fileHandleForReadingAtPath:path];
@@ -568,7 +595,7 @@ static NSString *ThetaTranscodeAudioToM4A(AVAsset *asset, NSString *sourcePath) 
     AVAssetExportSession *session = [AVAssetExportSession exportSessionWithAsset:asset presetName:AVAssetExportPresetAppleM4A];
     if (!session) return nil;
     session.outputURL = [NSURL fileURLWithPath:outPath];
-    session.outputFileType = AVFileTypeAppleM4A;
+    if (!ThetaExportSessionSetFileType(session, AVFileTypeAppleM4A)) return nil;
     dispatch_semaphore_t sem = dispatch_semaphore_create(0);
     __block BOOL ok = NO;
     [session exportAsynchronouslyWithCompletionHandler:^{
@@ -611,7 +638,20 @@ NSString *ThetaPrepareDashAudioForMerge(NSString *audioPath) {
     return nil;
 }
 
+static BOOL ThetaExportPhotosCompatibleMP4Impl(NSString *videoPath, NSString *audioPath, BOOL hasAudio, NSString *outputPath);
+
 BOOL ThetaExportPhotosCompatibleMP4(NSString *videoPath, NSString *audioPath, BOOL hasAudio, NSString *outputPath) {
+    /* Backstop: AVFoundation raises for parameter problems rather than returning an error, and
+       every caller runs on a background queue where an escaping exception aborts the process. */
+    @try {
+        return ThetaExportPhotosCompatibleMP4Impl(videoPath, audioPath, hasAudio, outputPath);
+    } @catch (NSException *e) {
+        NSLog(@"[Theta] ThetaExportPhotosCompatibleMP4 raised: %@ — %@", e.name, e.reason);
+        return NO;
+    }
+}
+
+static BOOL ThetaExportPhotosCompatibleMP4Impl(NSString *videoPath, NSString *audioPath, BOOL hasAudio, NSString *outputPath) {
     if (videoPath.length == 0 || outputPath.length == 0) return NO;
     NSFileManager *fm = [NSFileManager defaultManager];
     if ([fm fileExistsAtPath:outputPath]) [fm removeItemAtPath:outputPath error:nil];
@@ -675,7 +715,7 @@ BOOL ThetaExportPhotosCompatibleMP4(NSString *videoPath, NSString *audioPath, BO
         AVAssetExportSession *session = [AVAssetExportSession exportSessionWithAsset:composition presetName:preset];
         if (!session) continue;
         session.outputURL = outURL;
-        session.outputFileType = AVFileTypeMPEG4;
+        if (!ThetaExportSessionSetFileType(session, AVFileTypeMPEG4)) continue;
         if ([session respondsToSelector:@selector(setShouldOptimizeForNetworkUse:)]) {
             session.shouldOptimizeForNetworkUse = YES;
         }

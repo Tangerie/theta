@@ -259,6 +259,18 @@ build_sideload() {
 		rm -rf "$out_app/ThetaResources.bundle"
 		cp -f -R "$SCRIPT_DIR/ThetaResources.bundle" "$out_app/ThetaResources.bundle"
 	fi
+	# A previously-patched IPA can already carry loose libav*.framework copies under Frameworks/.
+	# Two ffmpeg installs share install names, so dyld mixes them and libavformat fails to load,
+	# which silently disables the AV1 transcode path at runtime.
+	local stray
+	stray="$(find "$out_app/Frameworks" -maxdepth 1 -type d -name 'libav*.framework' -o -maxdepth 1 -type d -name 'libsw*.framework' 2>/dev/null | head -5)"
+	if [[ -n "$stray" ]]; then
+		echo "[Build] WARNING: input IPA already contains ffmpeg libraries under Frameworks/:"
+		echo "$stray" | sed 's/^/[Build]          /'
+		echo "[Build]          These collide with the staged ffmpeg.framework. Remove them from"
+		echo "[Build]          input/Payload/*.app/Frameworks/ and rebuild if AV1 saving fails."
+	fi
+
 	local ffmpeg_src="$SCRIPT_DIR/layout/Library/Application Support/ffmpeg.framework"
 	if [[ -d "$ffmpeg_src" ]]; then
 		echo "[Build] Embedding ffmpeg.framework..."
