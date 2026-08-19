@@ -656,7 +656,8 @@ static BOOL ThetaExportPhotosCompatibleMP4Impl(NSString *videoPath, NSString *au
     NSFileManager *fm = [NSFileManager defaultManager];
     if ([fm fileExistsAtPath:outputPath]) [fm removeItemAtPath:outputPath error:nil];
 
-    AVAsset *videoAsset = [AVAsset assetWithURL:[NSURL fileURLWithPath:videoPath]];
+    /* Precise timing, or a fragmented DASH segment reports duration 0 and we bail below. */
+    AVAsset *videoAsset = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:videoPath] options:@{AVURLAssetPreferPreciseDurationAndTimingKey: @YES}];
     ThetaAVAssetLoadKeys(videoAsset);
     AVAssetTrack *videoTrack = [[videoAsset tracksWithMediaType:AVMediaTypeVideo] firstObject];
     if (!videoTrack) return NO;

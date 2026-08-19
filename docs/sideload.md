@@ -114,8 +114,9 @@ own hook.
 - At runtime `ThetaSubstrateLoad()` (`Source/Runtime/THSubstrate.m`) dlopens the first of
   `/usr/lib/libsubstrate.dylib`, `@executable_path/CydiaSubstrate.framework/CydiaSubstrate`,
   `@executable_path/Frameworks/…`, or bare `CydiaSubstrate`, so the same code path works in both
-  products. If none resolve, `ThetaMSHookFunction` no-ops and only the C-function hooks
-  (Liquid Glass) are lost.
+  products. If none resolve, `ThetaMSHookFunction` no-ops. Under `SIDELOAD` the only caller is
+  compiled out anyway (§9), so Substrate is effectively unused there — it is still staged and
+  weak-linked so the dylib loads either way.
 
 ## 6. Other sideload-only differences
 
@@ -161,7 +162,9 @@ search in `AV1Transcoder.m:89`).
      -change /Library/Frameworks/CydiaSubstrate.framework/CydiaSubstrate → @executable_path/…
      -change @rpath/CydiaSubstrate.framework/CydiaSubstrate            → @executable_path/…
 8. stage CydiaSubstrate.framework (see §5)
-9. copy ThetaResources.bundle and, if present, ffmpeg.framework into the .app
+9. copy ThetaResources.bundle and, if present, ffmpeg.framework into the .app, then run
+   scripts/isolate-ffmpeg-dylibs.py over the staged ffmpeg.framework so its install names
+   can't collide with Instagram's own bundled FFmpeg (see media-pipeline.md §4)
 10. delete .DS_Store, xattr -rc, zip -9 -r output/Instagram_patched.ipa Payload
 ```
 
@@ -175,6 +178,17 @@ Instagram, and `control` declaring `Depends: mobilesubstrate`.
 ## 9. Known-broken on sideload
 
 The Navigation features — Tab Icon Order, Swipe Between Tabs, Launch Tab, Hide Feed/Explore/Reels/
-Messages Tab, and Messenger Mode — do not work in sideload builds. Everything else is expected to
-work in both products. This is documented in the README's issue table and is the first thing to
+Messages Tab, and Messenger Mode — do not work in sideload builds.
+
+**Liquid Glass's C-symbol overrides are jailbreak-only, and must stay that way.** Substrate patches
+a function by making its page writable and writing a branch into it. In a re-signed app that page
+is left `rw-` and no longer matches the code signature, so the first call into it is killed by the
+kernel: `EXC_BAD_ACCESS` / `KERN_PROTECTION_FAILURE`, termination namespace `CODESIGNING`,
+indicator `Invalid Page`. Observed on IG 441.0.0 / iOS 26.6 as a 100% launch crash inside
+`FBSharedFramework`'s `__TEXT` at `IGFloatingTabBarEnabled`, reached from
+`METARunPreApplicationMain`. `theta_tryInstallLiquidGlassTabBarCSymbolHooks()` is therefore
+compiled out under `SIDELOAD`; the ObjC swizzles in the same feature are safe because they only
+rewrite runtime dispatch tables. Any future `ThetaMSHookFunction` call site needs the same guard.
+
+Everything else is expected to work in both products. This is documented in the README's issue table and is the first thing to
 check before debugging a tab-related report.

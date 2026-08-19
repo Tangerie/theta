@@ -223,7 +223,9 @@ static void downloadHDVideoSelectingURL(IGVideo *inputVideo, NSString *selectedV
         }
         
         // Detect and log video encoding
-        AVAsset *videoAsset = [AVAsset assetWithURL:[NSURL fileURLWithPath:videoPath]];
+        /* Fragmented MP4 (IG serves DASH/CMAF segments) advertises duration 0 in its moov;
+           only the precise-timing option makes AVFoundation walk sidx/moof for the real value. */
+        AVAsset *videoAsset = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:videoPath] options:@{AVURLAssetPreferPreciseDurationAndTimingKey: @YES}];
         {
             dispatch_semaphore_t videoKeysSem = dispatch_semaphore_create(0);
             [videoAsset loadValuesAsynchronouslyForKeys:@[@"tracks", @"duration"] completionHandler:^{
@@ -287,8 +289,23 @@ static void downloadHDVideoSelectingURL(IGVideo *inputVideo, NSString *selectedV
                     success = YES;
                     fileToSave = h264OutputPath;
                 } else {
-                    NSLog(@"Native export failed; Photos may still reject original AV1");
-                    fileToSave = videoPath;
+                    /* Never substitute the raw download. It is a fragmented AV1 DASH segment:
+                       moov advertises duration 0, there are no sample tables, and the audio lives
+                       in a separate representation that never got muxed in. Photos rejects it, and
+                       in folder mode it used to land in Documents/AudioNotes as a "saved" video
+                       that nothing could play. Fail honestly instead. */
+                    NSLog(@"AV1 conversion unavailable; refusing to save the raw DASH segment");
+                    /* Name the reason in the toast — without a console there is no other way to
+                       tell "ffmpeg didn't load" from "ffmpeg loaded and the encode failed". */
+                    NSString *reason = transcodeError.localizedDescription.length
+                        ? [NSString stringWithFormat:@"AV1 conversion failed: %@", transcodeError.localizedDescription]
+                        : @"This reel is AV1 and couldn't be converted.";
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        showCompletionToast(progressToast, NO, @"Couldn't convert video", reason,
+                                            [UIImage systemImageNamed:@"exclamationmark.triangle"], nil);
+                    });
+                    finishJob();
+                    return;
                 }
             }
             
@@ -371,7 +388,7 @@ static void downloadHDVideoSelectingURL(IGVideo *inputVideo, NSString *selectedV
         
         // Detect and log audio encoding if audio file exists
         if (hasAudio) {
-            AVAsset *audioAsset = [AVAsset assetWithURL:[NSURL fileURLWithPath:audioPath]];
+            AVAsset *audioAsset = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:audioPath] options:@{AVURLAssetPreferPreciseDurationAndTimingKey: @YES}];
             NSArray<AVAssetTrack *> *audioTracks = [audioAsset tracksWithMediaType:AVMediaTypeAudio];
             if (audioTracks.count > 0) {
                 AVAssetTrack *audioTrack = audioTracks[0];
@@ -402,7 +419,7 @@ static void downloadHDVideoSelectingURL(IGVideo *inputVideo, NSString *selectedV
         AVMutableCompositionTrack *compositionVideoTrack = [composition addMutableTrackWithMediaType:AVMediaTypeVideo preferredTrackID:kCMPersistentTrackID_Invalid];
         AVMutableCompositionTrack *compositionAudioTrack = nil;
         
-        AVAsset *videoAssetForMerge = [AVAsset assetWithURL:[NSURL fileURLWithPath:videoPath]];
+        AVAsset *videoAssetForMerge = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:videoPath] options:@{AVURLAssetPreferPreciseDurationAndTimingKey: @YES}];
         {
             dispatch_semaphore_t loadSem = dispatch_semaphore_create(0);
             [videoAssetForMerge loadValuesAsynchronouslyForKeys:@[@"tracks", @"duration"] completionHandler:^{

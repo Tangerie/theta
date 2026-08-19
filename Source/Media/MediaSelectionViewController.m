@@ -1662,7 +1662,8 @@ static void * const playerKey = &playerKey;
                 }
                 
                 // Detect video encoding
-                AVAsset *videoAsset = [AVAsset assetWithURL:[NSURL fileURLWithPath:videoPath]];
+                /* Precise timing: a fragmented DASH segment reports duration 0 in its moov. */
+                AVAsset *videoAsset = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:videoPath] options:@{AVURLAssetPreferPreciseDurationAndTimingKey: @YES}];
                 NSArray<AVAssetTrack *> *videoTracks = [videoAsset tracksWithMediaType:AVMediaTypeVideo];
                 BOOL isAV1Video = NO;
                 
@@ -1721,9 +1722,11 @@ static void * const playerKey = &playerKey;
                         NSLog(@"AV1 transcoding failed for video %ld (%@); trying native export", (long)videoIndex, transcodeError);
                         if ([fm fileExistsAtPath:outputPath]) [fm removeItemAtPath:outputPath error:nil];
                         if (!ThetaExportPhotosCompatibleMP4(videoPath, audioPath, hasAudio, outputPath)) {
-                            NSError *copyErr = nil;
-                            if (![fm copyItemAtPath:videoPath toPath:outputPath error:&copyErr]) {
-                                NSLog(@"Bulk %ld: could not copy original after transcode failure: %@", (long)videoIndex, copyErr);
+                            /* Don't fall back to copying the raw download: IG's DASH segments are
+                               fragmented AV1 with a zero-duration moov and no audio track, which
+                               Photos refuses and players can't seek. Report the item as failed. */
+                            {
+                                NSLog(@"Bulk %ld: AV1 conversion unavailable; not saving the raw segment", (long)videoIndex);
                                 [fm removeItemAtPath:videoPath error:nil];
                                 if (audioPath) [fm removeItemAtPath:audioPath error:nil];
                                 dispatch_async(statsQueue, ^{
@@ -1759,7 +1762,7 @@ static void * const playerKey = &playerKey;
                     AVAsset *audioAssetForMerge = nil;
                     AVAssetTrack *audioTrackForMerge = nil;
                     if (hasAudio && audioPath && [fm fileExistsAtPath:audioPath]) {
-                        audioAssetForMerge = [AVAsset assetWithURL:[NSURL fileURLWithPath:audioPath]];
+                        audioAssetForMerge = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:audioPath] options:@{AVURLAssetPreferPreciseDurationAndTimingKey: @YES}];
                         audioTrackForMerge = [[audioAssetForMerge tracksWithMediaType:AVMediaTypeAudio] firstObject];
                     }
                     
@@ -2332,22 +2335,27 @@ static void * const playerKey = &playerKey;
             __block NSString *frameworkPath;
 
             dispatch_once(&onceToken, ^{
+                /* dylibs/ffmpegkit is where scripts/isolate-ffmpeg-dylibs.py puts it, with its
+                   @rpath dependencies rewritten to @loader_path so it binds to our libav* and not
+                   to the stripped ones Instagram bundles. The other paths are older layouts. */
 #ifndef SIDELOAD
-                frameworkPath = ROOT_PATH_NS(@"/Library/Application Support/ffmpeg.framework/ffmpegkit");
-                ffmpegkitHandle = dlopen([frameworkPath UTF8String], RTLD_NOW);
-                if (!ffmpegkitHandle) {
-                    NSString *alternativePath = ROOT_PATH_NS(@"/Library/Application Support/ffmpeg.framework/ffmpegkit");
-                    ffmpegkitHandle = dlopen([alternativePath UTF8String], RTLD_NOW);
+                NSString *ffmpegRoot = ROOT_PATH_NS(@"/Library/Application Support/ffmpeg.framework");
+                for (NSString *rel in @[@"dylibs/ffmpegkit", @"ffmpegkit.framework/ffmpegkit", @"ffmpegkit"]) {
+                    frameworkPath = [ffmpegRoot stringByAppendingPathComponent:rel];
+                    ffmpegkitHandle = dlopen([frameworkPath UTF8String], RTLD_NOW);
+                    if (ffmpegkitHandle) break;
                 }
 #else
                 NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
                 NSString *frameworksPath = [[NSBundle mainBundle] privateFrameworksPath];
-                NSArray *sideloadPaths = @[
-                    [bundlePath stringByAppendingPathComponent:@"ffmpeg.framework/ffmpegkit"],
-                    [frameworksPath stringByAppendingPathComponent:@"ffmpeg.framework/ffmpegkit"],
-                    [[NSBundle mainBundle] pathForResource:@"ffmpegkit" ofType:nil inDirectory:@"ffmpeg.framework"] ?: @"",
-                    @"/ffmpeg.framework/ffmpegkit"
-                ];
+                NSMutableArray *sideloadPaths = [NSMutableArray array];
+                for (NSString *dir in @[bundlePath ?: @"", frameworksPath ?: @""]) {
+                    if (!dir.length) continue;
+                    NSString *root = [dir stringByAppendingPathComponent:@"ffmpeg.framework"];
+                    for (NSString *rel in @[@"dylibs/ffmpegkit", @"ffmpegkit.framework/ffmpegkit", @"ffmpegkit"]) {
+                        [sideloadPaths addObject:[root stringByAppendingPathComponent:rel]];
+                    }
+                }
                 for (NSString *path in sideloadPaths) {
                     if (path.length > 0) {
                         frameworkPath = path;
