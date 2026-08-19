@@ -81,6 +81,12 @@ Details that matter:
   quality (`…p`), bandwidth, frame rate, duration, and an **estimated output size**
   (`ThetaDashEstimateConvertedBytes`, `:117`) so the menu can show "1080p · H.264 · ~24.3 MB".
   Codec sort rank keeps compatible codecs above AV1.
+- **Fragmented input needs precise timing.** Every asset read from a downloaded file is created as
+  `AVURLAsset` with `AVURLAssetPreferPreciseDurationAndTimingKey: @YES`. IG serves fragmented MP4
+  (`ftyp` compatible brands include `dash`/`cmfc`), where the `moov` is an init segment: `mvhd`,
+  `tkhd` and `mdhd` durations are all **0** and the sample tables are empty, with the real duration
+  only derivable from `sidx`/`moof`. Without the option `AVAsset.duration` comes back as zero while
+  the tracks still load, which is what fed an invalid `CMTimeRange` into `insertTimeRange:`.
 - **Audio fix-up before muxing.** `ThetaPrepareDashAudioForMerge` (`:586`) first tries renaming by
   magic bytes (`ThetaRenameAudioByMagic`) so AVFoundation recognizes the container, then attempts
   an AAC re-export (`ThetaTranscodeAudioToM4A`), and returns `nil` if no decodable audio track can
@@ -120,7 +126,12 @@ Photos may reject it, so:
    re-encodes H.264, muxing the separate audio file if present, reporting progress into the toast.
 2. If FFmpeg is unavailable or fails, fall back to `ThetaExportPhotosCompatibleMP4()` (pure
    AVFoundation re-export).
-3. If that also fails, attempt to save the original file and let Photos decide.
+3. If that also fails, **the save fails** with "Couldn't convert video". It deliberately does *not*
+   fall back to saving the raw download: IG's `<BaseURL>` is a fragmented DASH/CMAF segment whose
+   `moov` advertises duration 0 with no sample tables, and whose audio is a separate representation
+   that was never muxed in. Photos rejects such a file, and in folder mode it used to land in
+   `Documents/AudioNotes` as a "saved" video that nothing could play. The bulk path in
+   `MediaSelectionViewController.m` marks the item "Transcoding failed" for the same reason.
 
 `Source/Media/AV1Transcoder.m` loads FFmpeg lazily with `dlopen` and resolves ~40 symbols with
 `dlsym` through `FUNC_PTR`/`LOAD_FUNC` macros. Search order for the framework:
